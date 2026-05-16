@@ -2,8 +2,12 @@ package bundle
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/globulario/awareness/project"
 )
 
 func TestBundle_GenericContract_JSONRoundTrip(t *testing.T) {
@@ -212,5 +216,63 @@ func TestBundle_RuntimeSignalsOptional(t *testing.T) {
 	}
 	if got.ProjectName != m.ProjectName {
 		t.Errorf("ProjectName: want %q, got %q", m.ProjectName, got.ProjectName)
+	}
+}
+
+// TestBuild_IncludesOptionalExtendedFiles verifies that Build copies optional
+// extended knowledge files (decisions.yaml, forbidden_assumptions.yaml, etc.)
+// into the bundle when they are present in the awareness root.
+func TestBuild_IncludesOptionalExtendedFiles(t *testing.T) {
+	// Create a fake awareness root with core + extended files.
+	docsDir := t.TempDir()
+	writeYAML := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(docsDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	writeYAML("invariants.yaml", "invariants:\n  - id: inv.test\n    summary: test invariant\n    severity: high\n")
+	writeYAML("failure_modes.yaml", "failure_modes:\n  - id: fm.test\n    summary: test failure\n")
+	writeYAML("forbidden_fixes.yaml", "forbidden_fixes:\n  - id: ff.test\n    summary: do not do this\n")
+	writeYAML("decisions.yaml", "decisions:\n  - id: dec.test\n    title: test decision\n    status: accepted\n    because: [reason]\n")
+	writeYAML("forbidden_assumptions.yaml", "forbidden_assumptions:\n  - id: fa.test\n    statement: do not assume\n    safer_checks: [verify first]\n")
+	writeYAML("authority_rules.yaml", "authority_rules:\n  - id: ar.test\n    title: auth rule\n    layer: Desired\n    rule: use etcd\n    correct_authority: [etcd]\n")
+
+	prof := &project.ProjectProfile{
+		Name: "test-project",
+		Kind: "library",
+		Root: docsDir,
+		Awareness: project.AwarenessPaths{
+			Root:           docsDir,
+			Invariants:     []string{filepath.Join(docsDir, "invariants.yaml")},
+			FailureModes:   []string{filepath.Join(docsDir, "failure_modes.yaml")},
+			ForbiddenFixes: []string{filepath.Join(docsDir, "forbidden_fixes.yaml")},
+		},
+	}
+
+	outputDir := t.TempDir()
+	manifest, err := Build(prof, outputDir, BuildOptions{Revision: "abc123"})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if manifest.DecisionsPath == "" {
+		t.Error("DecisionsPath should be set when decisions.yaml is present")
+	}
+	if manifest.ForbiddenAssumptionsPath == "" {
+		t.Error("ForbiddenAssumptionsPath should be set when forbidden_assumptions.yaml is present")
+	}
+	if manifest.AuthorityRulesPath == "" {
+		t.Error("AuthorityRulesPath should be set when authority_rules.yaml is present")
+	}
+	// Files that were NOT written should remain empty.
+	if manifest.RequiredTestsPath != "" {
+		t.Errorf("RequiredTestsPath should be empty when required_tests.yaml is absent, got %q", manifest.RequiredTestsPath)
+	}
+
+	// Verify the files were actually copied.
+	if _, err := os.Stat(filepath.Join(outputDir, manifest.DecisionsPath)); err != nil {
+		t.Errorf("decisions file not found in bundle: %v", err)
 	}
 }

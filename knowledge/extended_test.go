@@ -679,3 +679,66 @@ func TestAssurance_Lines(t *testing.T) {
 		t.Error("expected at least one line from Assurance.Lines()")
 	}
 }
+
+// TestLoadFromPaths_ExtendedRoot verifies that LoadFromPaths loads the 7 optional
+// extended knowledge types from the extendedRoot directory when provided.
+func TestLoadFromPaths_ExtendedRoot(t *testing.T) {
+	dir := makeExtendedTestDir(t)
+
+	// Core types via explicit path slices; extended types via extendedRoot.
+	base, err := knowledge.LoadFromPaths(
+		[]string{dir + "/invariants.yaml"},
+		[]string{dir + "/failure_modes.yaml"},
+		nil,
+		nil,
+		dir, // extendedRoot
+	)
+	if err != nil {
+		t.Fatalf("LoadFromPaths: %v", err)
+	}
+
+	if len(base.Invariants) == 0 {
+		t.Error("invariants: expected >0 from explicit paths")
+	}
+	if len(base.Decisions) == 0 {
+		t.Error("decisions: expected >0 from extendedRoot")
+	}
+	if len(base.ForbiddenAssumptions) == 0 {
+		t.Error("forbidden_assumptions: expected >0 from extendedRoot")
+	}
+	if len(base.RequiredTests) == 0 {
+		t.Error("required_tests: expected >0 from extendedRoot")
+	}
+	if len(base.AuthorityRules) == 0 {
+		t.Error("authority_rules: expected >0 from extendedRoot")
+	}
+	if len(base.RemediationContracts) == 0 {
+		t.Error("remediation_contracts: expected >0 from extendedRoot")
+	}
+	t.Logf("LoadFromPaths+extendedRoot: inv=%d dec=%d fa=%d rt=%d ar=%d rc=%d",
+		len(base.Invariants), len(base.Decisions), len(base.ForbiddenAssumptions),
+		len(base.RequiredTests), len(base.AuthorityRules), len(base.RemediationContracts))
+}
+
+// TestLoadFromPaths_ExtendedRootAbsent verifies that LoadFromPaths works normally
+// when no extendedRoot is provided (backward compatibility).
+func TestLoadFromPaths_ExtendedRootAbsent(t *testing.T) {
+	dir := makeExtendedTestDir(t)
+
+	base, err := knowledge.LoadFromPaths(
+		[]string{dir + "/invariants.yaml"},
+		[]string{dir + "/failure_modes.yaml"},
+		nil,
+		nil,
+		// no extendedRoot
+	)
+	if err != nil {
+		t.Fatalf("LoadFromPaths: %v", err)
+	}
+	if len(base.Invariants) == 0 {
+		t.Error("invariants should load without extendedRoot")
+	}
+	if len(base.Decisions) != 0 {
+		t.Errorf("decisions should be empty without extendedRoot, got %d", len(base.Decisions))
+	}
+}
