@@ -1,0 +1,32 @@
+remediation_contracts:
+  - id: remediation.services_import_detected
+    title: Safe handling of a services import leak into standalone
+    when:
+      failure_modes:
+        - services.import.leak
+    allowed_actions:
+      - identify the file and package that introduced the import
+      - check whether the import can be removed by using the Adapter interface
+      - add the capability to the Adapter interface if it is genuinely needed
+      - run go build and check-import-wall.sh after the fix
+    forbidden_actions:
+      - add a build tag to hide the import
+      - copy services code into standalone to avoid the import
+      - remove the import wall check script
+    requires_human_approval:
+      - adding a new method to the Adapter interface (changes the contract)
+
+  - id: remediation.knowledge_validation_failure
+    title: Safe handling of a knowledge base validation failure
+    when:
+      failure_modes: []
+    allowed_actions:
+      - read the ValidationError to identify the specific kind, id, and problem
+      - fix the empty field or broken cross-reference in the YAML file
+      - re-run go test ./knowledge/... to confirm the fix
+    forbidden_actions:
+      - suppress validation errors in code instead of fixing the YAML
+      - delete the knowledge entry to silence the error
+      - add an exception for a specific ID
+    requires_human_approval:
+      - removing a knowledge entry that is referenced by other entries

@@ -1,0 +1,30 @@
+decisions:
+  - id: decision.import_wall_is_mandatory
+    title: Standalone awareness must never import runtime-specific packages
+    status: accepted
+    date: 2026-05-16
+    because:
+      - standalone awareness is used by projects without any specific runtime
+      - importing runtime packages forces every consumer to vendor all runtime dependencies
+      - the adapter interface is the correct extension point for runtime-specific behavior
+    protects_invariants:
+      - import.wall.maintained
+    related_failure_modes:
+      - services.import.leak
+    forbidden_fixes:
+      - no.hardcode.services.import
+    evidence_contracts: []
+
+  - id: decision.null_adapter_is_default
+    title: NullAdapter is returned by default so projects without a live cluster still work
+    status: accepted
+    date: 2026-05-16
+    because:
+      - most projects using standalone awareness have no live cluster
+      - requiring a live adapter would block offline use and CI
+      - the adapter can be replaced at runtime without changing awareness code
+    protects_invariants:
+      - import.wall.maintained
+    related_failure_modes: []
+    forbidden_fixes: []
+    evidence_contracts: []

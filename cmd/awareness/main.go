@@ -157,11 +157,20 @@ func runPreflight(args []string) {
 		classification = preflight.ClassifyTask(task)
 	}
 
-	// Raw knowledge fallback.
-	rawMatches := preflight.RawKnowledgeFallback(task, changedFiles, prof.Awareness.Root)
+	// Knowledge scan: typed search over all knowledge files.
+	rawMatches := preflight.RawKnowledgeFallbackFromPaths(task, changedFiles, prof.Awareness)
 
-	// Accumulate invariants/failure_modes/forbidden_fixes from raw matches.
-	var invariants, failureModes, forbiddenFixes []string
+	// Accumulate knowledge IDs from matches with score >= 2.
+	var (
+		invariants           []string
+		failureModes         []string
+		forbiddenFixes       []string
+		incidentPatterns     []string
+		decisions            []string
+		forbiddenAssumptions []string
+		authorityRules       []string
+		remediationContracts []string
+	)
 	for _, m := range rawMatches {
 		if m.Score < 2 {
 			continue
@@ -173,24 +182,63 @@ func runPreflight(args []string) {
 			failureModes = append(failureModes, m.ID)
 		case "forbidden_fix":
 			forbiddenFixes = append(forbiddenFixes, m.ID)
+		case "incident_pattern":
+			incidentPatterns = append(incidentPatterns, m.ID)
+		case "decision":
+			decisions = append(decisions, m.ID)
+		case "forbidden_assumption":
+			forbiddenAssumptions = append(forbiddenAssumptions, m.ID)
+		case "authority_rule":
+			authorityRules = append(authorityRules, m.ID)
+		case "remediation_contract":
+			remediationContracts = append(remediationContracts, m.ID)
 		}
 	}
+
+	// Extended preflight items use path-pattern and task-term matching
+	// for required_tests and preflight_questions (more precise than keyword score).
+	var requiredTests, preflightQuestions, questions []string
+	if items := preflight.ExtendedPreflightItemsFromPaths(task, changedFiles, prof.Awareness); items != nil {
+		requiredTests = items.RequiredTests
+		preflightQuestions = items.PreflightQuestions
+		questions = items.Questions
+		// Merge scored matches with path-matched results.
+		decisions = preflight.UniqueStrings(append(decisions, items.Decisions...))
+		forbiddenAssumptions = preflight.UniqueStrings(append(forbiddenAssumptions, items.ForbiddenAssumptions...))
+		authorityRules = preflight.UniqueStrings(append(authorityRules, items.AuthorityRules...))
+		remediationContracts = preflight.UniqueStrings(append(remediationContracts, items.RemediationContracts...))
+	}
+
 	invariants = preflight.UniqueStrings(invariants)
 	failureModes = preflight.UniqueStrings(failureModes)
 	forbiddenFixes = preflight.UniqueStrings(forbiddenFixes)
+	incidentPatterns = preflight.UniqueStrings(incidentPatterns)
+
+	// Compute confidence and verdict.
+	verdict, confidence := computeVerdict(failureModes, forbiddenAssumptions, questions)
 
 	result := preflight.PreflightResult{
-		ProjectName:    prof.Name,
-		Task:           task,
-		ChangedFiles:   changedFiles,
-		Classification: classification,
-		Invariants:     invariants,
-		FailureModes:   failureModes,
-		ForbiddenFixes: forbiddenFixes,
-		RawMatches:     rawMatches,
-		RuntimeStatus:  runtimeStatus,
-		Warnings:       warnings,
-		OK:             true,
+		ProjectName:          prof.Name,
+		Task:                 task,
+		ChangedFiles:         changedFiles,
+		Classification:       classification,
+		Invariants:           invariants,
+		FailureModes:         failureModes,
+		ForbiddenFixes:       forbiddenFixes,
+		IncidentPatterns:     incidentPatterns,
+		Decisions:            decisions,
+		ForbiddenAssumptions: forbiddenAssumptions,
+		AuthorityRules:       authorityRules,
+		RequiredTests:        requiredTests,
+		PreflightQuestions:   preflightQuestions,
+		Questions:            questions,
+		RemediationContracts: remediationContracts,
+		Verdict:              verdict,
+		Confidence:           confidence,
+		RawMatches:           rawMatches,
+		RuntimeStatus:        runtimeStatus,
+		Warnings:             warnings,
+		OK:                   true,
 	}
 
 	switch format {
@@ -205,11 +253,25 @@ func runPreflight(args []string) {
 	}
 }
 
+func computeVerdict(failureModes, forbiddenAssumptions, questions []string) (verdict, confidence string) {
+	switch {
+	case len(forbiddenAssumptions) > 0 || len(questions) > 0:
+		return "warn", "insufficient_evidence"
+	case len(failureModes) > 0:
+		return "warn", "suspected"
+	default:
+		return "ok", "confirmed"
+	}
+}
+
 func printPreflightText(r preflight.PreflightResult) {
 	fmt.Printf("project: %s\n", r.ProjectName)
 	fmt.Printf("runtime: %s\n", r.RuntimeStatus)
 	if r.Task != "" {
 		fmt.Printf("task:    %s\n", r.Task)
+	}
+	if r.Verdict != "" {
+		fmt.Printf("verdict: %s  confidence: %s\n", r.Verdict, r.Confidence)
 	}
 	fmt.Printf("changed: %d files\n", len(r.ChangedFiles))
 	if len(r.Classification) > 0 {
@@ -222,6 +284,30 @@ func printPreflightText(r preflight.PreflightResult) {
 	fmt.Printf("raw_matches: %d\n", len(r.RawMatches))
 	for _, m := range r.RawMatches {
 		fmt.Printf("  - %s: %s (score:%d)\n", m.Kind, m.ID, m.Score)
+	}
+	if len(r.IncidentPatterns) > 0 {
+		fmt.Printf("incident_patterns:      %s\n", strings.Join(r.IncidentPatterns, ", "))
+	}
+	if len(r.Decisions) > 0 {
+		fmt.Printf("decisions:              %s\n", strings.Join(r.Decisions, ", "))
+	}
+	if len(r.ForbiddenAssumptions) > 0 {
+		fmt.Printf("forbidden_assumptions:  %s\n", strings.Join(r.ForbiddenAssumptions, ", "))
+	}
+	if len(r.AuthorityRules) > 0 {
+		fmt.Printf("authority_rules:        %s\n", strings.Join(r.AuthorityRules, ", "))
+	}
+	if len(r.RequiredTests) > 0 {
+		fmt.Printf("required_tests:         %s\n", strings.Join(r.RequiredTests, ", "))
+	}
+	if len(r.Questions) > 0 {
+		fmt.Printf("preflight_questions:\n")
+		for _, q := range r.Questions {
+			fmt.Printf("  - %s\n", q)
+		}
+	}
+	if len(r.RemediationContracts) > 0 {
+		fmt.Printf("remediation_contracts:  %s\n", strings.Join(r.RemediationContracts, ", "))
 	}
 	if len(r.Warnings) > 0 {
 		for _, w := range r.Warnings {

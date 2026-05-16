@@ -1,28 +1,16 @@
 package preflight
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/globulario/awareness/knowledge"
+	"github.com/globulario/awareness/project"
 )
 
-var rawTokenRE = regexp.MustCompile(`[a-zA-Z0-9_./:-]+`)
-
-var rawStopWords = map[string]bool{
-	"the": true, "and": true, "for": true, "with": true, "from": true, "that": true,
-	"this": true, "into": true, "when": true, "where": true, "what": true, "will": true,
-	"make": true, "fix": true, "code": true, "file": true, "tool": true, "safe": true,
-	"module": true, "awareness": true, "globular": true, "service": true, "services": true,
-}
-
-// RawKnowledgeMatch is a conservative fallback match from the source YAML files.
-// It exists to make NO_MATCH honest: graph lookup can be silent while the
-// hand-authored truth files still contain relevant knowledge.
+// RawKnowledgeMatch is a scored match from the hand-authored awareness YAML files.
+// The public shape is kept stable so that services MCP tools that import this
+// package continue to compile without changes.
 type RawKnowledgeMatch struct {
 	Source       string   `json:"source"`
 	Kind         string   `json:"kind"`
@@ -31,71 +19,54 @@ type RawKnowledgeMatch struct {
 	MatchedTerms []string `json:"matched_terms"`
 }
 
-// RawKnowledgeFallback scans hand-authored awareness YAML files directly.
-// It is intentionally simple and deterministic: if the graph query misses,
-// this gives the agent a second lantern before it walks into the cave.
+// kindSource maps a knowledge kind to its canonical filename.
+var kindSource = map[string]string{
+	"invariant":            "invariants.yaml",
+	"failure_mode":         "failure_modes.yaml",
+	"forbidden_fix":        "forbidden_fixes.yaml",
+	"incident_pattern":     "incident_patterns.yaml",
+	"decision":             "decisions.yaml",
+	"forbidden_assumption": "forbidden_assumptions.yaml",
+	"required_test":        "required_tests.yaml",
+	"subsystem_boundary":   "subsystem_boundaries.yaml",
+	"authority_rule":       "authority_rules.yaml",
+	"preflight_question":   "preflight_questions.yaml",
+	"remediation_contract": "remediation_contracts.yaml",
+}
+
+// RawKnowledgeFallback scans hand-authored awareness YAML files for entries
+// relevant to the given task and changed files. It is deterministic and
+// requires no database. Results are sorted by score descending, capped at 12.
+//
+// docsDir is the .awareness/ directory path (prof.Awareness.Root).
 func RawKnowledgeFallback(task string, files []string, docsDir string) []RawKnowledgeMatch {
 	if strings.TrimSpace(docsDir) == "" {
 		return nil
 	}
-	terms := rawSearchTerms(task, files)
-	if len(terms) == 0 {
+
+	base, err := knowledge.Load(docsDir)
+	if err != nil || base == nil {
 		return nil
 	}
 
-	candidates := []struct{ file, kind, listKey string }{
-		{"failure_modes.yaml", "failure_mode", "failure_modes"},
-		{"invariants.yaml", "invariant", "invariants"},
-		{"convergence_rules.yaml", "invariant", "invariants"},
-		{"forbidden_fixes.yaml", "forbidden_fix", "forbidden_fixes"},
-		{"design_patterns.yaml", "design_pattern", "design_patterns"},
-		{"patterns.yaml", "pattern", "patterns"},
+	matches := knowledge.Search(base, task, files)
+	if len(matches) == 0 {
+		return nil
 	}
 
-	var out []RawKnowledgeMatch
-	for _, c := range candidates {
-		path := filepath.Join(docsDir, c.file)
-		data, err := os.ReadFile(path)
-		if err != nil || len(bytes.TrimSpace(data)) == 0 {
-			continue
+	out := make([]RawKnowledgeMatch, 0, len(matches))
+	for _, m := range matches {
+		src := kindSource[m.Kind]
+		if src == "" {
+			src = m.Kind + ".yaml"
 		}
-		var root map[string]interface{}
-		if err := yaml.Unmarshal(data, &root); err != nil {
-			continue
-		}
-		items, _ := root[c.listKey].([]interface{})
-		for _, item := range items {
-			m, _ := item.(map[string]interface{})
-			if len(m) == 0 {
-				continue
-			}
-			id, _ := m["id"].(string)
-			blobBytes, _ := yaml.Marshal(item)
-			blob := strings.ToLower(string(blobBytes))
-			matched := make([]string, 0)
-			for _, term := range terms {
-				if strings.Contains(blob, strings.ToLower(term)) {
-					matched = append(matched, term)
-				}
-			}
-			if len(matched) == 0 {
-				continue
-			}
-			score := len(matched)
-			// Strong bump when a file path or dotted invariant/failure-mode ID matched.
-			for _, mt := range matched {
-				if strings.Contains(mt, "/") || strings.Contains(mt, ".") || strings.Contains(mt, "_") {
-					score++
-				}
-			}
-			out = append(out, RawKnowledgeMatch{
-				Source:       c.file,
-				Kind:         c.kind,
-				ID:           id,
-				Score:        score,
-				MatchedTerms: UniqueStrings(matched),
-			})
-		}
+		out = append(out, RawKnowledgeMatch{
+			Source:       src,
+			Kind:         m.Kind,
+			ID:           m.ID,
+			Score:        m.Score,
+			MatchedTerms: m.MatchedTerms,
+		})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -110,38 +81,83 @@ func RawKnowledgeFallback(task string, files []string, docsDir string) []RawKnow
 	return out
 }
 
-func rawSearchTerms(task string, files []string) []string {
-	seen := map[string]bool{}
-	add := func(s string) {
-		s = strings.Trim(strings.ToLower(s), " \t\n\r,.;()[]{}'\"")
-		if len(s) < 3 || rawStopWords[s] || seen[s] {
-			return
+// ExtendedPreflightItems returns the extended knowledge items (decisions,
+// forbidden assumptions, authority rules, required tests, preflight questions,
+// and remediation contracts) that match the given task and changed files.
+// docsDir is the .awareness/ directory path.
+func ExtendedPreflightItems(task string, files []string, docsDir string) *knowledge.PreflightItems {
+	if strings.TrimSpace(docsDir) == "" {
+		return nil
+	}
+	base, err := knowledge.Load(docsDir)
+	if err != nil || base == nil {
+		return nil
+	}
+	items := knowledge.MatchedPreflightItems(base, task, files)
+	return &items
+}
+
+// RawKnowledgeFallbackFromPaths is the profile-aware variant of RawKnowledgeFallback.
+// It uses the multi-file path lists from the project profile instead of a single directory,
+// enabling Globular-style configs where invariants, failure modes, and forbidden fixes
+// each span multiple YAML files.
+func RawKnowledgeFallbackFromPaths(task string, files []string, paths project.AwarenessPaths) []RawKnowledgeMatch {
+	base, err := knowledge.LoadFromPaths(
+		paths.Invariants,
+		paths.FailureModes,
+		paths.ForbiddenFixes,
+		paths.IncidentPatterns,
+	)
+	if err != nil || base == nil {
+		return nil
+	}
+
+	matches := knowledge.Search(base, task, files)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	out := make([]RawKnowledgeMatch, 0, len(matches))
+	for _, m := range matches {
+		src := kindSource[m.Kind]
+		if src == "" {
+			src = m.Kind + ".yaml"
 		}
-		seen[s] = true
+		out = append(out, RawKnowledgeMatch{
+			Source:       src,
+			Kind:         m.Kind,
+			ID:           m.ID,
+			Score:        m.Score,
+			MatchedTerms: m.MatchedTerms,
+		})
 	}
-	for _, t := range rawTokenRE.FindAllString(task, -1) {
-		add(t)
-		if strings.Contains(t, ".") || strings.Contains(t, "_") || strings.Contains(t, ":") {
-			for _, part := range regexp.MustCompile(`[._:/-]+`).Split(t, -1) {
-				add(part)
-			}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Score == out[j].Score {
+			return out[i].ID < out[j].ID
 		}
+		return out[i].Score > out[j].Score
+	})
+	if len(out) > 12 {
+		out = out[:12]
 	}
-	for _, f := range files {
-		f = filepath.ToSlash(f)
-		add(f)
-		add(filepath.Base(f))
-		parts := strings.FieldsFunc(f, func(r rune) bool { return r == '/' || r == '-' || r == '_' || r == '.' })
-		for _, part := range parts {
-			add(part)
-		}
+	return out
+}
+
+// ExtendedPreflightItemsFromPaths is the profile-aware variant of ExtendedPreflightItems.
+// It uses the multi-file path lists from the project profile.
+func ExtendedPreflightItemsFromPaths(task string, files []string, paths project.AwarenessPaths) *knowledge.PreflightItems {
+	base, err := knowledge.LoadFromPaths(
+		paths.Invariants,
+		paths.FailureModes,
+		paths.ForbiddenFixes,
+		paths.IncidentPatterns,
+	)
+	if err != nil || base == nil {
+		return nil
 	}
-	terms := make([]string, 0, len(seen))
-	for t := range seen {
-		terms = append(terms, t)
-	}
-	sort.Strings(terms)
-	return terms
+	items := knowledge.MatchedPreflightItems(base, task, files)
+	return &items
 }
 
 // UniqueStrings deduplicates a string slice preserving order.

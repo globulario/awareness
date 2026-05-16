@@ -129,6 +129,7 @@ func loadFromDir(dir, cfgName string) (*ProjectProfile, error) {
 	prof.Awareness.Invariants = resolveAll(prof.Awareness.Invariants)
 	prof.Awareness.FailureModes = resolveAll(prof.Awareness.FailureModes)
 	prof.Awareness.ForbiddenFixes = resolveAll(prof.Awareness.ForbiddenFixes)
+	prof.Awareness.IncidentPatterns = resolveAll(prof.Awareness.IncidentPatterns)
 	prof.Awareness.CausalRules = resolveAll(prof.Awareness.CausalRules)
 	prof.Awareness.ContextAliases = resolveAll(prof.Awareness.ContextAliases)
 	prof.Awareness.DecisionsDir = resolve(prof.Awareness.DecisionsDir)

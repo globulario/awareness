@@ -1,0 +1,41 @@
+forbidden_assumptions:
+  - id: assumption.missing_knowledge_file_means_error
+    statement: A missing .awareness YAML file means the project is misconfigured
+    status: false
+    why_wrong:
+      - knowledge files are optional; a project may use only the types it needs
+      - Load() silently skips missing files by design
+      - absence of a file is not the same as an invalid configuration
+    caused_failures: []
+    safer_checks:
+      - check whether the file is expected for this project's knowledge model
+      - use Load() return value and validate the loaded base instead
+    related_invariants:
+      - import.wall.maintained
+
+  - id: assumption.high_score_means_definitive_match
+    statement: A high search score means the knowledge entry definitively applies
+    status: false
+    why_wrong:
+      - keyword scoring is heuristic — it matches terms, not semantics
+      - a high score may be coincidental if terms appear in unrelated context
+      - human review of matched entries is always required before acting on them
+    caused_failures: []
+    safer_checks:
+      - read the full knowledge entry, not just its ID
+      - check that the matched terms actually relate to the change being made
+    related_invariants: []
+
+  - id: assumption.unknown_state_means_failure
+    statement: Unknown or missing data about a system component means that component has failed
+    status: false
+    why_wrong:
+      - collectors may return partial data due to timing, network, or scope limits
+      - absence of inventory is uncertain — it does not prove the component is down
+      - collapsing unknown into failed causes false alarms and destructive remediation
+    caused_failures: []
+    safer_checks:
+      - distinguish confirmed failure from missing evidence
+      - require at least one positive signal of failure before classifying as down
+      - treat missing data as unknown, not as failure
+    related_invariants: []

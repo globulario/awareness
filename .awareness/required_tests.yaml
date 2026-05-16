@@ -1,0 +1,50 @@
+required_tests:
+  - id: test.import_wall_check
+    title: Import wall must pass after any dependency or adapter change
+    protects:
+      invariants:
+        - import.wall.maintained
+      failure_modes:
+        - services.import.leak
+    required_for_changes:
+      paths:
+        - go.mod
+        - go.sum
+        - runtime/**
+        - cmd/**
+      task_terms:
+        - import
+        - dependency
+        - adapter
+        - runtime
+        - services
+    commands:
+      - scripts/check-import-wall.sh
+      - go build ./...
+    evidence:
+      - no github.com/globulario/services imports
+      - no etcd imports
+      - no SQLite imports
+
+  - id: test.knowledge_load_validate
+    title: knowledge.Load and knowledge.Validate must pass on any .awareness/ change
+    protects:
+      invariants:
+        - import.wall.maintained
+      failure_modes: []
+    required_for_changes:
+      paths:
+        - .awareness/**
+        - knowledge/**
+      task_terms:
+        - knowledge
+        - awareness
+        - invariant
+        - failure_mode
+        - forbidden_fix
+    commands:
+      - go test ./knowledge/...
+    evidence:
+      - all YAML files parse without error
+      - all cross-references resolve
+      - no orphan knowledge entries

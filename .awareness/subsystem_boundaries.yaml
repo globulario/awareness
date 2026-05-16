@@ -1,0 +1,46 @@
+subsystem_boundaries:
+  - subsystem: standalone
+    owns:
+      - knowledge types and loaders
+      - preflight verdict logic
+      - project profile resolution
+      - MCP tool definitions
+      - adapter interface contract
+    does_not_own:
+      - live cluster state
+      - etcd data
+      - runtime gRPC connections
+      - node inventory
+      - package installation state
+    authoritative_sources:
+      desired_state: hand-authored .awareness/ YAML files
+      installed_state: not applicable (standalone has no install state)
+      runtime_state: adapter.RuntimeSignals (injected by caller)
+      inventory_state: not applicable (standalone has no inventory)
+    dangerous_confusions:
+      - using live cluster data as if it were file-based knowledge
+      - importing services runtime clients inside standalone packages
+      - treating NullAdapter responses as real cluster health data
+    related_invariants:
+      - import.wall.maintained
+
+  - subsystem: knowledge
+    owns:
+      - typed YAML loaders for all knowledge files
+      - Search, Validate, Selfcheck, Assurance functions
+      - Confidence and Match types
+    does_not_own:
+      - preflight result formatting
+      - MCP transport
+      - project profile resolution
+      - adapter wiring
+    authoritative_sources:
+      desired_state: .awareness/*.yaml files committed to the project
+      installed_state: not applicable
+      runtime_state: not applicable
+      inventory_state: not applicable
+    dangerous_confusions:
+      - mutating loaded knowledge at runtime
+      - treating search scores as certainty of applicability
+    related_invariants:
+      - import.wall.maintained

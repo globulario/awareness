@@ -72,6 +72,13 @@ type BundleManifest struct {
 	// DecisionsPath is the relative path to the decisions snapshot directory
 	// inside the bundle.
 	DecisionsPath string `json:"decisions_path,omitempty"`
+	// Extended knowledge files (optional — present only when the project defines them).
+	ForbiddenAssumptionsPath  string `json:"forbidden_assumptions_path,omitempty"`
+	RequiredTestsPath         string `json:"required_tests_path,omitempty"`
+	SubsystemBoundariesPath   string `json:"subsystem_boundaries_path,omitempty"`
+	AuthorityRulesPath        string `json:"authority_rules_path,omitempty"`
+	PreflightQuestionsPath    string `json:"preflight_questions_path,omitempty"`
+	RemediationContractsPath  string `json:"remediation_contracts_path,omitempty"`
 
 	// RuntimeSignalsPath is the relative path to the optional runtime signals
 	// overlay (runtime_signals.json) inside the bundle. Present only when the

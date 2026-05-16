@@ -1,0 +1,38 @@
+authority_rules:
+  - id: authority.awareness_yaml_is_ground_truth
+    title: Hand-authored .awareness YAML files are the authoritative knowledge source
+    layer: Knowledge
+    question: Which source is authoritative for invariants, failure modes, and forbidden fixes?
+    rule: Read from .awareness/*.yaml. Do not synthesize knowledge from code comments, git history, or inferred patterns unless explicitly adding it to a YAML file.
+    wrong_authority:
+      - code comments
+      - git log messages
+      - inferred patterns from code structure
+      - runtime graph database
+    correct_authority:
+      - .awareness/invariants.yaml
+      - .awareness/failure_modes.yaml
+      - .awareness/forbidden_fixes.yaml
+      - .awareness/incident_patterns.yaml
+      - .awareness/decisions.yaml
+      - .awareness/forbidden_assumptions.yaml
+    related_invariants:
+      - import.wall.maintained
+    forbidden_assumptions:
+      - assumption.high_score_means_definitive_match
+
+  - id: authority.adapter_owns_runtime_state
+    title: The Adapter interface is the sole authority for runtime state in standalone
+    layer: Runtime
+    question: Where does standalone awareness get live cluster or service state?
+    rule: All runtime signals must flow through the Adapter interface. Standalone code must never call external services, etcd, or gRPC endpoints directly.
+    wrong_authority:
+      - direct etcd client calls
+      - direct gRPC stubs
+      - environment variable inspection for cluster topology
+    correct_authority:
+      - runtime.Adapter.Signals()
+      - runtime.NullAdapter (returns zero/empty signals for offline use)
+    related_invariants:
+      - import.wall.maintained
+    forbidden_assumptions: []

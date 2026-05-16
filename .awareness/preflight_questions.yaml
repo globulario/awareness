@@ -1,0 +1,48 @@
+preflight_questions:
+  - id: preflight.import_change
+    title: Import or dependency change preflight
+    when:
+      task_terms:
+        - import
+        - dependency
+        - require
+        - vendor
+        - go.mod
+        - adapter
+        - services
+      paths:
+        - go.mod
+        - go.sum
+        - runtime/**
+    questions:
+      - Does this change add any import from a runtime-specific or services package?
+      - Have you run scripts/check-import-wall.sh to verify the standalone boundary?
+      - If adding a runtime capability, is it behind the Adapter interface?
+      - Which projects that consume standalone awareness are affected by this change?
+    blocking_if_unanswered:
+      - import wall verification
+
+  - id: preflight.knowledge_type_change
+    title: Knowledge schema or loader change preflight
+    when:
+      task_terms:
+        - knowledge
+        - schema
+        - loader
+        - yaml
+        - invariant
+        - failure_mode
+        - forbidden_fix
+        - selfcheck
+        - assurance
+      paths:
+        - knowledge/**
+        - .awareness/**
+    questions:
+      - Are any existing fields being renamed or removed? (breaks existing YAML files)
+      - Have you added the new type to Base, Load, Validate, Search, Selfcheck, and Assurance?
+      - Have you added a seed YAML entry in .awareness/ for the new type?
+      - Do the new tests cover Load, Validate, Search, and Selfcheck for the new type?
+    blocking_if_unanswered:
+      - backward compatibility check
+      - test coverage for new type

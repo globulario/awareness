@@ -406,7 +406,16 @@ func registerTools(srv *mcpServer) {
 
 		rawMatches := preflight.RawKnowledgeFallback(task, changedFiles, prof.Awareness.Root)
 
-		var invariants, failureModes, forbiddenFixes []string
+		var (
+			invariants           []string
+			failureModes         []string
+			forbiddenFixes       []string
+			incidentPatterns     []string
+			decisions            []string
+			forbiddenAssumptions []string
+			authorityRules       []string
+			remediationContracts []string
+		)
 		for _, m := range rawMatches {
 			if m.Score < 2 {
 				continue
@@ -418,7 +427,28 @@ func registerTools(srv *mcpServer) {
 				failureModes = append(failureModes, m.ID)
 			case "forbidden_fix":
 				forbiddenFixes = append(forbiddenFixes, m.ID)
+			case "incident_pattern":
+				incidentPatterns = append(incidentPatterns, m.ID)
+			case "decision":
+				decisions = append(decisions, m.ID)
+			case "forbidden_assumption":
+				forbiddenAssumptions = append(forbiddenAssumptions, m.ID)
+			case "authority_rule":
+				authorityRules = append(authorityRules, m.ID)
+			case "remediation_contract":
+				remediationContracts = append(remediationContracts, m.ID)
 			}
+		}
+
+		var requiredTests, preflightQuestions, questions []string
+		if items := preflight.ExtendedPreflightItems(task, changedFiles, prof.Awareness.Root); items != nil {
+			requiredTests = items.RequiredTests
+			preflightQuestions = items.PreflightQuestions
+			questions = items.Questions
+			decisions = preflight.UniqueStrings(append(decisions, items.Decisions...))
+			forbiddenAssumptions = preflight.UniqueStrings(append(forbiddenAssumptions, items.ForbiddenAssumptions...))
+			authorityRules = preflight.UniqueStrings(append(authorityRules, items.AuthorityRules...))
+			remediationContracts = preflight.UniqueStrings(append(remediationContracts, items.RemediationContracts...))
 		}
 
 		runtimeStatus := "disabled"
@@ -431,18 +461,30 @@ func registerTools(srv *mcpServer) {
 			}
 		}
 
+		verdict, confidence := mcpComputeVerdict(failureModes, forbiddenAssumptions, questions)
+
 		return preflight.PreflightResult{
-			ProjectName:    prof.Name,
-			Task:           task,
-			ChangedFiles:   changedFiles,
-			Classification: classification,
-			Invariants:     preflight.UniqueStrings(invariants),
-			FailureModes:   preflight.UniqueStrings(failureModes),
-			ForbiddenFixes: preflight.UniqueStrings(forbiddenFixes),
-			RawMatches:     rawMatches,
-			RuntimeStatus:  runtimeStatus,
-			Warnings:       warnings,
-			OK:             true,
+			ProjectName:          prof.Name,
+			Task:                 task,
+			ChangedFiles:         changedFiles,
+			Classification:       classification,
+			Invariants:           preflight.UniqueStrings(invariants),
+			FailureModes:         preflight.UniqueStrings(failureModes),
+			ForbiddenFixes:       preflight.UniqueStrings(forbiddenFixes),
+			IncidentPatterns:     preflight.UniqueStrings(incidentPatterns),
+			Decisions:            decisions,
+			ForbiddenAssumptions: forbiddenAssumptions,
+			AuthorityRules:       authorityRules,
+			RequiredTests:        requiredTests,
+			PreflightQuestions:   preflightQuestions,
+			Questions:            questions,
+			RemediationContracts: remediationContracts,
+			Verdict:              verdict,
+			Confidence:           confidence,
+			RawMatches:           rawMatches,
+			RuntimeStatus:        runtimeStatus,
+			Warnings:             warnings,
+			OK:                   true,
 		}, nil
 	})
 
@@ -783,6 +825,154 @@ func registerTools(srv *mcpServer) {
 			"warnings":                 warnings,
 		}, nil
 	})
+
+	// ── awareness_decision_lookup ──────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_decision_lookup",
+		Description: "Look up architectural decision records that explain why a rule or constraint exists. Useful before modifying a design to understand the reasoning behind the current structure.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {Type: "string", Description: "Task description or keywords to match against decision records."},
+			},
+			Required: []string{"query"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		if items == nil {
+			return map[string]interface{}{"decisions": []string{}, "count": 0}, nil
+		}
+		return map[string]interface{}{
+			"project":   prof.Name,
+			"query":     query,
+			"decisions": items.Decisions,
+			"count":     len(items.Decisions),
+		}, nil
+	})
+
+	// ── awareness_forbidden_assumption_lookup ──────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_forbidden_assumption_lookup",
+		Description: "Look up forbidden assumptions — beliefs that are provably wrong and have caused past failures. Call this before making a design decision that involves implicit assumptions about system state.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {Type: "string", Description: "Task description or keywords to match against forbidden assumptions."},
+			},
+			Required: []string{"query"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		if items == nil {
+			return map[string]interface{}{"forbidden_assumptions": []string{}, "count": 0}, nil
+		}
+		return map[string]interface{}{
+			"project":              prof.Name,
+			"query":                query,
+			"forbidden_assumptions": items.ForbiddenAssumptions,
+			"count":                len(items.ForbiddenAssumptions),
+		}, nil
+	})
+
+	// ── awareness_authority_lookup ─────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_authority_lookup",
+		Description: "Look up authority rules that name which layer or source owns the answer to a specific question. Prevents mixing layers (desired vs installed vs runtime vs inventory).",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {Type: "string", Description: "Task description or question to match against authority rules."},
+			},
+			Required: []string{"query"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		if items == nil {
+			return map[string]interface{}{"authority_rules": []string{}, "count": 0}, nil
+		}
+		return map[string]interface{}{
+			"project":        prof.Name,
+			"query":          query,
+			"authority_rules": items.AuthorityRules,
+			"count":          len(items.AuthorityRules),
+		}, nil
+	})
+
+	// ── awareness_required_tests ───────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_required_tests",
+		Description: "Return the tests that must be run before completing a task or change. Matches by task description and changed file paths.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"task":  {Type: "string", Description: "Task description to match against test requirements."},
+				"files": {Type: "string", Description: "Comma-separated changed file paths."},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		task, _ := args["task"].(string)
+		filesStr, _ := args["files"].(string)
+		var files []string
+		for _, f := range strings.Split(filesStr, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				files = append(files, f)
+			}
+		}
+		items := preflight.ExtendedPreflightItems(task, files, prof.Awareness.Root)
+		if items == nil {
+			return map[string]interface{}{"required_tests": []string{}, "count": 0}, nil
+		}
+		return map[string]interface{}{
+			"project":        prof.Name,
+			"task":           task,
+			"required_tests": items.RequiredTests,
+			"count":          len(items.RequiredTests),
+		}, nil
+	})
+
+	// ── awareness_remediation_lookup ───────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_remediation_lookup",
+		Description: "Look up safe remediation guidance for a failure mode or incident. Returns allowed actions, forbidden actions, and actions requiring human approval.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {Type: "string", Description: "Failure mode ID, failure description, or task description to match against remediation contracts."},
+			},
+			Required: []string{"query"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		if items == nil {
+			return map[string]interface{}{"remediation_contracts": []string{}, "count": 0}, nil
+		}
+		return map[string]interface{}{
+			"project":              prof.Name,
+			"query":                query,
+			"remediation_contracts": items.RemediationContracts,
+			"count":                len(items.RemediationContracts),
+		}, nil
+	})
+}
+
+func mcpComputeVerdict(failureModes, forbiddenAssumptions, questions []string) (verdict, confidence string) {
+	switch {
+	case len(forbiddenAssumptions) > 0 || len(questions) > 0:
+		return "warn", "insufficient_evidence"
+	case len(failureModes) > 0:
+		return "warn", "suspected"
+	default:
+		return "ok", "confirmed"
+	}
 }
 
 // ─── Git helpers ──────────────────────────────────────────────────────────────

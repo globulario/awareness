@@ -56,3 +56,258 @@ failure_modes:
     known_bad_fixes:
       - Wrapping the cluster call in a nil check on the adapter — the import still breaks
         standalone builds even if the code path is never executed
+
+# ── Globular cluster failure modes (preserved from failuregraph/seeds) ──────────
+# These encode real production incidents. Do not delete. Source: services/golang/awareness/failuregraph/seeds/
+
+  - id: globular.empty_advertise_ip_misclassifies_node
+    severity: critical
+    source: failuregraph/seeds/empty_advertise_ip_misclassifies_node.yaml
+    summary: >
+      Doctor / controller code reads NodeIdentity.AdvertiseIp (single string, often empty in
+      production) and compares it against curated stable IP lists, causing false-positive or
+      false-negative classification of pool nodes.
+    symptoms:
+      - cluster-doctor reports write_quorum_lost active_drives=0 even though every drive is online
+      - cluster-doctor reports unapproved_path for paths that ARE in admitted disk list
+      - Real out-of-pool MinIO instances go undetected because rule continues on empty AdvertiseIp
+      - Doctor reports every pool node as down at the same instant
+    root_cause: |
+      NodeIdentity.AdvertiseIp is a single-string field separate from the repeated Identity.Ips list.
+      The controller does not populate it, so it returns empty for every node. Rule code does
+      n.GetIdentity().GetAdvertiseIp() == ip without fallback, so comparison is always "" == "10.x.x.x" → false.
+      VIP-holder also reports floating VIP as Identity.Ips[0], not the stable interface IP.
+    correct_approach:
+      - Build poolIP→nodeID map by iterating every node's full Identity.Ips list; match against ANY IP
+      - When code must pick a single representative IP, use node.StableIP(clusterVIP) to exclude VIP
+      - Use nodeAnyIPInPool helper for pool-membership checks in cluster_controller
+    known_bad_fixes:
+      - Setting AdvertiseIp = Identity.Ips[0] just moves the bug — VIP-holder still reports VIP as Ips[0]
+      - Do not branch on whether a node is the VIP holder; iterate IPs is the correct fix everywhere
+      - Continuing past empty AdvertiseIp produces silent false-negatives — bug moves, not fixed
+      - Filtering VIP from node Identity.Ips at the source breaks legitimate identity reporting
+    regression_tests:
+      - TestWriteQuorumLost_VIPHolder_NotMisclassifiedAsDown
+      - TestWriteQuorumLost_VIPHolder_RealDowntimeStillFires
+      - TestNodeIDByPoolIP_MatchesByAnyIP
+      - TestNodeIDByPoolIP_EmptyAdvertiseIpDoesNotPoison
+
+  - id: globular.empty_store_result_deserialization
+    severity: warning
+    source: failuregraph/seeds/empty_store_result_deserialization.yaml
+    summary: Store returned empty bytes with nil error and caller attempted JSON unmarshal without a length guard.
+    symptoms:
+      - unexpected end of JSON input
+      - empty response decoded as JSON
+      - flickering UI data from missing record
+    root_cause: |
+      Store returned []byte{}, nil for missing key. Caller attempted json.Unmarshal without
+      len(data) > 0 guard. Empty bytes are not a transient condition — they indicate no record.
+    correct_approach:
+      - Treat empty bytes as no-record. Add len(data) > 0 guard before unmarshal
+    known_bad_fixes:
+      - Do not retry the read — empty bytes are not a transient condition
+      - Do not hide the error in the UI
+      - Do not treat empty data as valid object without explicit default semantics
+    regression_tests:
+      - TestEmptyBytesNilError_UnmarshalSkipped
+      - TestMissingKey_NoRecord_NoCrash
+      - TestValidJsonPayload_RoundTrips
+
+  - id: globular.endpoint_identity_scope_violation
+    severity: critical
+    source: failuregraph/seeds/endpoint_identity_scope_violation.yaml
+    summary: Advertised endpoint and TLS identity drifted — VIP or stale DNS used outside its identity contract.
+    symptoms:
+      - TLS SAN mismatch
+      - x509 certificate is valid for X, not Y
+      - CLI/API endpoint uses VIP or stale IP not covered by cert identity
+    root_cause: |
+      Advertised endpoint and TLS identity drifted — e.g. cert issued for hostname but connection
+      uses IP. VIP or stale DNS record used outside its identity contract — VIP not in cert SAN.
+    correct_approach:
+      - Use canonical DNS endpoint with matching DNS SAN in the TLS certificate
+      - Include IP endpoint in IP SAN if IP endpoint is canonical and stable
+      - Ensure clients derive ServerName from the identity contract, not from resolved addresses
+    known_bad_fixes:
+      - Do not disable TLS verification
+      - Do not hardcode 127.0.0.1 or localhost
+      - Do not configure clients to accept any certificate
+    regression_tests:
+      - TestAdvertisedEndpointMatchesCertSAN
+      - TestClientServerNameMatchesEndpointIdentity
+
+  - id: globular.installed_state_build_id_missing
+    severity: critical
+    source: failuregraph/seeds/installed_state_build_id_missing.yaml
+    summary: Installed-state record has version but no build_id, so it cannot satisfy build_id-pinned desired-state.
+    symptoms:
+      - Post-install drift loop — package reported missing immediately after install
+      - missing_package event despite version match between installed and desired
+      - Installed-state record has version field but empty build_id field
+    root_cause: |
+      Legacy Day-0 or heartbeat path still writes version-only installed-state after repository
+      build_id refactor changed identity to build_id-pinned. Version string alone is not
+      sufficient identity after the build_id refactor.
+    correct_approach:
+      - Preserve build_id through desired, apply request, apply result, controller commit, and installed-state record
+      - Backfill missing build_id only through controller authority with proof — not through heartbeat or node-agent
+    known_bad_fixes:
+      - Do not relax drift scanner to accept version-only installed-state
+      - Do not treat version string as sole immutable identity after build_id refactor
+      - Do not re-enable old authoritative shim without runtime/commit boundary
+    regression_tests:
+      - TestVersionOnlyInstalledState_CannotSatisfyBuildIdPinnedDesiredState
+      - TestControllerCommit_PersistsBuildId
+      - TestLegacyMissingBuildId_BackfilledWithProof
+
+  - id: globular.legacy_authority_path_still_called
+    severity: warning
+    source: failuregraph/seeds/legacy_authority_path_still_called.yaml
+    summary: Old Day-0 or sync path still calls an authoritative write function disabled after authority refactor.
+    symptoms:
+      - Authoritative writes are controller-only but legacy path bypasses this
+      - Disabled shim called during Day-0 bootstrap
+      - Sync path silently fails to persist installed evidence
+    root_cause: |
+      Old Day-0 path still calls a write function that was disabled after authority refactor
+      moved ownership to controller commit. The legacy path has no knowledge of the new authority boundary.
+    correct_approach:
+      - Replace legacy authoritative writes with controller commit path
+      - Write runtime evidence using NormalRuntimeWrite if explicitly non-authoritative (cannot overwrite controller commit)
+    known_bad_fixes:
+      - Do not re-enable old shim as authoritative
+      - Do not let heartbeat or node-agent write controller-owned state
+    regression_tests:
+      - TestLegacyShim_NotCalledForAuthoritativeCommit
+      - TestRuntimeEvidence_CannotOverwriteControllerCommit
+      - TestControllerCommit_AlwaysWins
+
+  - id: globular.topology_gated_package_false_drift
+    severity: warning
+    source: failuregraph/seeds/topology_gated_package_false_drift.yaml
+    summary: Drift scanner and target selection use different eligibility rules, causing false missing_package for topology-gated packages.
+    symptoms:
+      - missing_package loop for an inactive infrastructure member
+      - scan_drift reports drift for a package that is not eligible on this node
+    root_cause: |
+      Drift scanner and target selection use different eligibility rules — one checks topology gate,
+      the other does not. The result is that inactive infrastructure members generate drift noise
+      for packages they should never receive.
+    correct_approach:
+      - Use a single shared isActiveInfraMember / eligibility function for both drift scanner and target selection
+      - Drift scanner and selectReleaseTargets must agree on the eligible node set
+    known_bad_fixes:
+      - Do not ignore all missing_package drift — only topology-gated inactive members are exempt
+      - Do not install infrastructure packages on inactive/ineligible nodes to silence drift
+      - Do not remove topology gating — it prevents quorum violations
+    regression_tests:
+      - TestInactiveMember_DoesNotEmitMissingPackageDrift
+      - TestActiveMember_MissingPackage_EmitsDrift
+      - TestScanDrift_AndSelectReleaseTargets_AgreeOnEligibleNodeSet
+
+  - id: globular.vip_used_as_member_endpoint
+    severity: critical
+    source: failuregraph/seeds/vip_used_as_member_endpoint.yaml
+    summary: Keepalived floating VIP used where a real node NIC IP is required for member identity.
+    symptoms:
+      - Scylla hosts include cluster VIP
+      - Service config points to floating VIP address
+      - Clients connect through VIP where member identity is required
+    root_cause: |
+      PrimaryIP() returned keepalived VIP instead of real node NIC IP because VIP is the first
+      non-loopback interface on the VIP holder. Member-identity-requiring services (Scylla, MinIO peers,
+      etcd advertise) received the floating VIP, which causes connection refused when VIP moves.
+    correct_approach:
+      - Use StableIP(clusterVIP) — filters out the floating VIP, returns real node NIC IP
+      - Read VIP from /globular/ingress/v1/spec vip_failover.vip field
+      - "Exclude VIP from member endpoint lists: Scylla hosts, MinIO peers, etcd advertise addresses"
+    known_bad_fixes:
+      - Do not add VIP to service member hosts
+      - Do not disable TLS verification to work around VIP identity mismatch
+      - Do not add VIP to unrelated certificate SANs
+      - Do not treat ingress address as node identity
+    regression_tests:
+      - TestScyllaHosts_ExcludeVIP
+      - TestServiceMemberEndpoints_EqualActiveMemberIPs_NotVIP
+
+  - id: globular.workflow_blocked_reason_unclassified
+    severity: warning
+    source: failuregraph/seeds/workflow_blocked_reason_unclassified.yaml
+    summary: Workflow stuck in retry loop because blocked state has generic error and closure is unclear.
+    symptoms:
+      - Workflow stuck — retry count increases with no progress
+      - Blocked state has a generic error message with no classification
+      - Closure is unclear — no terminal state, no user-camp indicator
+    root_cause: |
+      Workflow engine cannot classify whether block is transient, terminal, user-camp, or
+      dependency-gated. Without classification, the default behavior is to retry forever,
+      which produces noise and hides the true state.
+    correct_approach:
+      - "Add explicit blocked reason: transient | terminal | user_camp | dependency_gated"
+      - Stop retry if rerun cannot change outcome — classify as terminal
+      - Surface user-camp or manual action requirement explicitly when needed
+    known_bad_fixes:
+      - Do not retry forever without classifying the block type
+      - Do not mark success without verification
+      - Do not delete stuck action without closure proof
+    regression_tests:
+      - TestTerminalBlock_DoesNotRetry
+      - TestTransientBlock_RetriesWithBackoff
+      - TestUserCampBlock_StopsLoopAndSurfacesRequiredAction
+
+  - id: globular.workflow_resume_without_receipt
+    severity: critical
+    source: failuregraph/seeds/workflow_resume_without_receipt.yaml
+    summary: Workflow step side effect completed but receipt was missing or not promoted, causing duplicate dispatch on resume.
+    symptoms:
+      - Workflow repeats side effect after service restart
+      - Action dispatched twice from the same workflow step
+      - Step appears completed locally but workflow resumes as if incomplete
+    root_cause: |
+      Step side effect completed but receipt was missing, not terminal, or not promoted before
+      restart. On resume, the engine cannot prove the side effect happened, so it dispatches again.
+    correct_approach:
+      - Write receipt before considering side effect resumable; use idempotency key
+      - Resume only from proven, promoted receipts — not from local state
+    known_bad_fixes:
+      - Do not increase retry count to work around duplicate dispatch
+      - Do not clear workflow action manually without ensuring side effect is idempotent
+      - Do not treat local side effect as global completion without a promoted receipt
+    regression_tests:
+      - TestRestartAfterSideEffectBeforeReceipt_NoduplicateDispatch
+      - TestRestartAfterReceiptBeforePromotion_ResumesFromReceipt
+      - TestDuplicateDispatch_PreventedByIdempotencyKey
+
+  - id: globular.infra_desired_hash_mismatch_restart_storm
+    severity: critical
+    source: learning/testdata/incidents/envoy_desired_hash_restart_storm.yaml
+    summary: >
+      Infrastructure desired hash mismatch causes Envoy restart storm — drift reconciler used
+      raw artifact digest as desired_hash while convergence used ComputeInfrastructureDesiredHash,
+      making convergence mathematically impossible.
+    symptoms:
+      - gRPC-Web calls fail with status 0
+      - Envoy receives repeated SIGTERM; systemd reports start-limit-hit
+      - InfrastructureRelease install workflows dispatched repeatedly (7 times in 45 min)
+      - installed-state checksum does not match InfrastructureRelease DesiredHash
+      - "Doctor finding: convergence.no_infinite_retry violated"
+    root_cause: |
+      Drift reconciler workflow used ResolvedArtifactDigest (raw artifact digest) as desired_hash
+      while InfrastructureRelease convergence check used ComputeInfrastructureDesiredHash. The two
+      hashes will never match, making convergence mathematically impossible. Each tick dispatched
+      a new install workflow which restarted Envoy, triggering systemd start-limit-hit.
+    correct_approach:
+      - "Use canonical InfrastructureRelease DesiredHash everywhere: workflow desired_hash, LocalHash, installed-state checksum, convergence commit"
+      - Do not use ResolvedArtifactDigest as desired_hash for infrastructure drift reconciliation
+    known_bad_fixes:
+      - Restarting Envoy on every convergence tick does not fix hash mismatch; triggers start-limit-hit
+      - Using ResolvedArtifactDigest as desired_hash produces a hash that never matches convergence check
+      - Creating InfrastructureRelease from heartbeat only bypasses the package/release/BOM authority chain
+      - Writing installed-state with non-canonical desired_hash causes infinite install loop
+    regression_tests:
+      - TestInfrastructureDesiredHashConsistency
+      - TestDriftWorkflowUsesDesiredHash
+      - TestRestartSingleflightPerService
+      - TestHeartbeatDoesNotCreateInfrastructureRelease
+      - TestMissingXDSInstalledStateBlocksEnvoyWithClearDiagnosis

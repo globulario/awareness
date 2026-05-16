@@ -1,0 +1,162 @@
+incident_patterns:
+  # Patterns extracted from real Globular cluster incidents.
+  # These encode the shape of dangerous edits, not their exact diffs.
+  # Source: services/golang/awareness/failuregraph/seeds/ and learning/testdata/incidents/
+
+  - id: pat.vip_identity_confusion
+    title: VIP used where stable NIC IP required
+    severity: critical
+    failure_mode: globular.vip_used_as_member_endpoint
+    root_cause: >
+      Code calls PrimaryIP() or reads Identity.Ips[0] without filtering the keepalived
+      floating VIP. On the VIP holder, the floating VIP is the first non-loopback interface,
+      so member-identity-requiring services (Scylla, MinIO peers, etcd) receive the VIP.
+    lesson: >
+      Never use PrimaryIP() for member-identity endpoints. Always use StableIP(clusterVIP)
+      which explicitly excludes the floating VIP. Match pool membership by iterating ALL of
+      Identity.Ips, not just Ips[0] or AdvertiseIp.
+    edit_shapes:
+      - any code that calls PrimaryIP() to build a Scylla hosts list
+      - any code that uses Ips[0] for etcd advertise-peer-urls
+      - any code that sets MinIO MINIO_VOLUMES using PrimaryIP output
+    wrong_fixes:
+      - adding VIP to Scylla hosts list
+      - disabling TLS verification to avoid SAN mismatch
+    files:
+      - golang/cluster_controller/
+      - golang/node_agent/
+      - golang/objectstore/
+    related_invariants:
+      - nulladapter.preferred
+
+  - id: pat.advertise_ip_empty_misclassification
+    title: Empty AdvertiseIp causes false-positive/negative node classification
+    severity: critical
+    failure_mode: globular.empty_advertise_ip_misclassifies_node
+    root_cause: >
+      NodeIdentity.AdvertiseIp is not populated by the controller. Code that compares
+      AdvertiseIp against a known pool IP set always gets "" == "10.x.x.x" → false,
+      producing either false-positive (node classified as down) or false-negative (out-of-pool
+      node not detected) depending on the rule direction.
+    lesson: >
+      Never rely on AdvertiseIp for pool membership checks. Build poolIP→nodeID map
+      from Identity.Ips (the repeated list). Use nodeAnyIPInPool helper.
+    edit_shapes:
+      - any code that calls GetAdvertiseIp() for membership comparison
+      - any code that reads AdvertiseIp to determine pool membership
+    wrong_fixes:
+      - setting AdvertiseIp = Identity.Ips[0]
+      - continuing past empty AdvertiseIp silently
+    files:
+      - golang/cluster_controller/cluster_controller_server/rules/
+      - golang/cluster_doctor/
+
+  - id: pat.workflow_no_receipt_duplicate_dispatch
+    title: Workflow side effect without promoted receipt causes duplicate dispatch on restart
+    severity: critical
+    failure_mode: globular.workflow_resume_without_receipt
+    root_cause: >
+      A workflow step dispatches a side effect (install, restart, publish) but does not
+      write a promoted receipt before the service restarts. On resume, the engine cannot
+      prove the side effect happened and dispatches again, causing duplicate effects.
+    lesson: >
+      Write idempotency key and receipt before considering a side effect resumable.
+      Resume only from proven, promoted receipts. Do not treat local state as global proof.
+    edit_shapes:
+      - adding a new workflow step that dispatches an effectful action
+      - modifying workflow resume logic
+      - changing how receipts are written or promoted
+    wrong_fixes:
+      - increasing retry count to tolerate duplicate dispatch
+      - clearing workflow action manually without idempotency proof
+    files:
+      - golang/workflow/workflow_server/
+
+  - id: pat.desired_hash_identity_mismatch
+    title: Two hash computation paths produce different desired_hash values, making convergence impossible
+    severity: critical
+    failure_mode: globular.infra_desired_hash_mismatch_restart_storm
+    root_cause: >
+      Different code paths use different hash functions for what should be the same identity value.
+      One path uses ResolvedArtifactDigest; another uses ComputeInfrastructureDesiredHash. Since
+      they never agree, every convergence tick triggers a new install workflow.
+    lesson: >
+      Use exactly one canonical hash function for each identity domain. Never use raw artifact
+      digest as infrastructure desired_hash. All sites (workflow desired_hash, installed-state
+      checksum, convergence committer, controller commit) must reference the same computation.
+    edit_shapes:
+      - adding a new convergence path that computes desired_hash independently
+      - modifying how InfrastructureRelease DesiredHash is computed or stored
+      - adding a new installed-state writer that does not use the canonical hash
+    wrong_fixes:
+      - restarting services to resolve hash mismatch
+      - stamping installed-state with the wrong hash type
+      - creating InfrastructureRelease from heartbeat discovery
+    files:
+      - golang/cluster_controller/cluster_controller_server/infrastructure_reconciler.go
+      - golang/node_agent/node_agent_server/installed_services.go
+      - golang/workflow/workflow_server/infra_release_handler.go
+    related_symbols:
+      - lookupServiceReleaseBuildID
+      - ComputeInfrastructureDesiredHash
+      - ResolvedArtifactDigest
+      - CommitConvergenceResult
+
+  - id: pat.drift_eligibility_disagreement
+    title: Drift scanner and target selection use different node eligibility rules
+    severity: warning
+    failure_mode: globular.topology_gated_package_false_drift
+    root_cause: >
+      Two code paths that must agree on which nodes are eligible compute eligibility differently.
+      The drift scanner checks one predicate; target selection checks another. Nodes ineligible
+      for installation still appear as drifted.
+    lesson: >
+      Extract a single shared isEligible / isActiveInfraMember function. Import it in both
+      the drift scanner and target selection. Never inline eligibility logic at call sites.
+    edit_shapes:
+      - adding a new topology gate or node classification
+      - modifying isActiveInfraMember predicate
+      - adding a new drift scanner rule for infrastructure packages
+    wrong_fixes:
+      - ignoring all missing_package drift
+      - installing packages on inactive nodes to silence drift
+
+  - id: pat.authority_refactor_stale_caller
+    title: Legacy caller bypasses authority refactor by calling disabled write function
+    severity: warning
+    failure_mode: globular.legacy_authority_path_still_called
+    root_cause: >
+      An authority refactor moves write ownership to the controller commit path, but an old
+      Day-0, sync, or heartbeat path is not updated and continues to call the now-disabled
+      write function, silently failing to persist state.
+    lesson: >
+      When refactoring authority, enumerate ALL callers of the old write function and update
+      each one. Do not leave legacy callers even if they "rarely execute." Audit with grep.
+    edit_shapes:
+      - any refactor that moves state write ownership to a new authority tier
+      - any change to controller commit path
+      - any new Day-0 or bootstrap path that writes installed evidence
+    wrong_fixes:
+      - re-enabling old shim as authoritative
+      - letting heartbeat write controller-owned state
+
+  - id: pat.deterministic_failure_retry_storm
+    title: Deterministic failure retried forever without quarantine
+    severity: warning
+    failure_mode: globular.workflow_blocked_reason_unclassified
+    root_cause: >
+      A workflow encounters a deterministic failure (signature invalid, config invalid, permanent
+      dependency missing) but the engine classifies it as transient and retries. Without a terminal
+      or quarantine classification, the retry loop runs until manual intervention.
+    lesson: >
+      Classify failures before retrying. Deterministic errors (signature invalid, schema mismatch,
+      invalid config) must be classified terminal or user_camp immediately. Do not retry a failure
+      if rerunning cannot change the outcome.
+    edit_shapes:
+      - adding a new workflow step that may encounter permanent failures
+      - modifying retry/backoff logic in workflow engine
+      - adding new error types that workflow must classify
+    wrong_fixes:
+      - increasing retry count
+      - marking success without verification
+      - deleting stuck action without closure proof

@@ -52,12 +52,13 @@ type MCPConfig struct {
 // AwarenessPaths holds resolved absolute paths to the project's Awareness
 // knowledge files. All paths are absolute after ResolveProfile returns.
 type AwarenessPaths struct {
-	Root           string   `yaml:"root" json:"root"`
-	Invariants     []string `yaml:"invariants" json:"invariants"`
-	FailureModes   []string `yaml:"failure_modes" json:"failure_modes"`
-	ForbiddenFixes []string `yaml:"forbidden_fixes" json:"forbidden_fixes"`
-	CausalRules    []string `yaml:"causal_rules" json:"causal_rules"`
-	ContextAliases []string `yaml:"context_aliases" json:"context_aliases"`
+	Root             string   `yaml:"root" json:"root"`
+	Invariants       []string `yaml:"invariants" json:"invariants"`
+	FailureModes     []string `yaml:"failure_modes" json:"failure_modes"`
+	ForbiddenFixes   []string `yaml:"forbidden_fixes" json:"forbidden_fixes"`
+	IncidentPatterns []string `yaml:"incident_patterns" json:"incident_patterns"`
+	CausalRules      []string `yaml:"causal_rules" json:"causal_rules"`
+	ContextAliases   []string `yaml:"context_aliases" json:"context_aliases"`
 	DecisionsDir   string   `yaml:"decisions_dir" json:"decisions_dir"`
 	ProposalsDir   string   `yaml:"proposals_dir" json:"proposals_dir"`
 }

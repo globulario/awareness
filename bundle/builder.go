@@ -80,6 +80,30 @@ func Build(prof *project.ProjectProfile, outputDir string, opts BuildOptions) (*
 		manifest.ForbiddenFixesPaths = append(manifest.ForbiddenFixesPaths, dst)
 	}
 
+	// Copy optional extended knowledge files when present in the awareness root.
+	if prof.Awareness.Root != "" {
+		optionalFiles := []struct {
+			name    string
+			setPath func(string)
+		}{
+			{"decisions.yaml", func(p string) { manifest.DecisionsPath = p }},
+			{"forbidden_assumptions.yaml", func(p string) { manifest.ForbiddenAssumptionsPath = p }},
+			{"required_tests.yaml", func(p string) { manifest.RequiredTestsPath = p }},
+			{"subsystem_boundaries.yaml", func(p string) { manifest.SubsystemBoundariesPath = p }},
+			{"authority_rules.yaml", func(p string) { manifest.AuthorityRulesPath = p }},
+			{"preflight_questions.yaml", func(p string) { manifest.PreflightQuestionsPath = p }},
+			{"remediation_contracts.yaml", func(p string) { manifest.RemediationContractsPath = p }},
+		}
+		for _, f := range optionalFiles {
+			src := filepath.Join(prof.Awareness.Root, f.name)
+			if _, err := os.Stat(src); err == nil {
+				if dst, err := copyKnowledgeFile(src, outputDir); err == nil {
+					f.setPath(dst)
+				}
+			}
+		}
+	}
+
 	// Runtime signals — set both canonical and v1 alias together.
 	if opts.RuntimeSignalsIncluded {
 		manifest.RuntimeSignalsPath = "runtime_signals.json"

@@ -13,6 +13,7 @@ languages:
 source_roots:
   - cmd
   - bundle
+  - knowledge
   - preflight
   - project
   - runtime
@@ -28,3 +29,9 @@ awareness:
     - .awareness/failure_modes.yaml
   forbidden_fixes:
     - .awareness/forbidden_fixes.yaml
+  incident_patterns:
+    - .awareness/incident_patterns.yaml
+  # Extended knowledge files (optional — load via knowledge.Load(root)):
+  # decisions.yaml, forbidden_assumptions.yaml, required_tests.yaml,
+  # subsystem_boundaries.yaml, authority_rules.yaml,
+  # preflight_questions.yaml, remediation_contracts.yaml
