@@ -1,0 +1,42 @@
+id: ERRCAT-empty_store_result_deserialization
+type: ErrorCategory
+name: empty_store_result_deserialization
+severity: warning
+summary: Store returned empty bytes with nil error and caller attempted JSON unmarshal without a length guard.
+
+signatures:
+  - "unexpected end of json input"
+  - "gettxt unmarshal unexpected end of json input"
+  - "unmarshal empty bytes"
+
+symptoms:
+  - id: SYM-unexpected_end_of_json
+    summary: "unexpected end of JSON input"
+  - id: SYM-empty_response_decoded_as_json
+    summary: "empty response decoded as JSON"
+  - id: SYM-flickering_ui_from_missing_record
+    summary: "flickering UI data from missing record"
+
+causes:
+  - id: CAUSE-store_returned_empty_bytes_nil_error
+    summary: "Store returned []byte{}, nil for missing key. Caller attempted json.Unmarshal without len(data) > 0 guard."
+
+resolutions:
+  - id: RES-add_len_guard_before_unmarshal
+    summary: "Treat empty bytes as no-record. Add len(data) > 0 guard before unmarshal."
+
+wrong_fixes:
+  - id: WRONG-retry_the_read
+    summary: "Do not retry the read — empty bytes are not a transient condition."
+  - id: WRONG-hide_error_in_ui
+    summary: "Do not hide the error in the UI."
+  - id: WRONG-treat_empty_data_as_valid_object
+    summary: "Do not treat empty data as valid object without explicit default semantics."
+
+tests:
+  - id: REGTEST-empty_bytes_nil_error
+    summary: "Stub store returns []byte{}, nil — unmarshal is skipped, no panic."
+  - id: REGTEST-missing_key_no_crash
+    summary: "Missing key returns no record, not an error."
+  - id: REGTEST-valid_json_payload_round_trips
+    summary: "Valid JSON payload round-trips correctly."

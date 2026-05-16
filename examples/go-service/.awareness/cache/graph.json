@@ -1,0 +1,233 @@
+{
+  "schema_version": "awareness.graph.v1",
+  "project": "go-service",
+  "generated_at": "2026-05-16T17:36:59.207653657Z",
+  "nodes": [
+    {
+      "id": "project:go-service",
+      "kind": "project",
+      "label": "go-service",
+      "properties": {
+        "kind": "application",
+        "root": "/home/dave/Documents/github.com/globulario/awareness/examples/go-service"
+      }
+    },
+    {
+      "id": "invariant:idempotency.required",
+      "kind": "invariant",
+      "label": "All mutating operations must be idempotent",
+      "properties": {
+        "severity": "critical",
+        "tags": "idempotency,rpc,mutation,_source:invariants.yaml",
+        "title": "All mutating operations must be idempotent"
+      }
+    },
+    {
+      "id": "invariant:context.propagation.required",
+      "kind": "invariant",
+      "label": "context.Context must be threaded through every call chain",
+      "properties": {
+        "severity": "critical",
+        "tags": "context,goroutine,timeout,_source:invariants.yaml",
+        "title": "context.Context must be threaded through every call chain"
+      }
+    },
+    {
+      "id": "invariant:goroutine.bounds.enforced",
+      "kind": "invariant",
+      "label": "Goroutines must be bounded and always terminate",
+      "properties": {
+        "severity": "error",
+        "tags": "goroutine,resource,concurrency,_source:invariants.yaml",
+        "title": "Goroutines must be bounded and always terminate"
+      }
+    },
+    {
+      "id": "invariant:no.global.mutable.state",
+      "kind": "invariant",
+      "label": "Global mutable state is forbidden outside explicit registries",
+      "properties": {
+        "severity": "critical",
+        "tags": "concurrency,testing,state,_source:invariants.yaml",
+        "title": "Global mutable state is forbidden outside explicit registries"
+      }
+    },
+    {
+      "id": "invariant:interface.boundary.discipline",
+      "kind": "invariant",
+      "label": "Interface boundaries must be minimal and stable",
+      "properties": {
+        "severity": "error",
+        "tags": "api,interface,compatibility,_source:invariants.yaml",
+        "title": "Interface boundaries must be minimal and stable"
+      }
+    },
+    {
+      "id": "failure_mode:goroutine.leak.on.cancel",
+      "kind": "failure_mode",
+      "label": "Goroutine leaks when context is cancelled before channel receive",
+      "properties": {
+        "severity": "error",
+        "symptoms": "goroutine count grows linearly with request rate under pprof|heap profile shows channel receive stacks accumulating|service becomes unresponsive after sustained traffic",
+        "tags": "goroutine,context,channel,leak,_source:failure_modes.yaml",
+        "title": "Goroutine leaks when context is cancelled before channel receive"
+      }
+    },
+    {
+      "id": "failure_mode:double.write.on.retry",
+      "kind": "failure_mode",
+      "label": "Non-idempotent handler writes duplicate records on retry",
+      "properties": {
+        "severity": "critical",
+        "symptoms": "duplicate entity IDs in the database|count divergence between source-of-truth and derived views|eventual consistency violation on downstream consumers",
+        "tags": "idempotency,database,retry,_source:failure_modes.yaml",
+        "title": "Non-idempotent handler writes duplicate records on retry"
+      }
+    },
+    {
+      "id": "failure_mode:race.on.global.counter",
+      "kind": "failure_mode",
+      "label": "Global counter race causes incorrect metrics",
+      "properties": {
+        "severity": "error",
+        "symptoms": "data race detected under go test -race|metric values fluctuate unpredictably in production",
+        "tags": "concurrency,metrics,race,_source:failure_modes.yaml",
+        "title": "Global counter race causes incorrect metrics"
+      }
+    },
+    {
+      "id": "forbidden_fix:no.time.sleep.in.handler",
+      "kind": "forbidden_fix",
+      "label": "Do not use time.Sleep() inside an HTTP or RPC handler",
+      "properties": {
+        "tags": "_source:forbidden_fixes.yaml",
+        "title": "Do not use time.Sleep() inside an HTTP or RPC handler"
+      }
+    },
+    {
+      "id": "forbidden_fix:no.goroutine.in.init",
+      "kind": "forbidden_fix",
+      "label": "Do not spawn goroutines in init() functions",
+      "properties": {
+        "tags": "_source:forbidden_fixes.yaml",
+        "title": "Do not spawn goroutines in init() functions"
+      }
+    },
+    {
+      "id": "forbidden_fix:no.package.level.var.mutex",
+      "kind": "forbidden_fix",
+      "label": "Do not use a package-level var to hold a sync.Mutex or sync.RWMutex",
+      "properties": {
+        "tags": "_source:forbidden_fixes.yaml",
+        "title": "Do not use a package-level var to hold a sync.Mutex or sync.RWMutex"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "project:go-service",
+      "to": "invariant:idempotency.required",
+      "kind": "defines"
+    },
+    {
+      "from": "project:go-service",
+      "to": "invariant:context.propagation.required",
+      "kind": "defines"
+    },
+    {
+      "from": "project:go-service",
+      "to": "invariant:goroutine.bounds.enforced",
+      "kind": "defines"
+    },
+    {
+      "from": "project:go-service",
+      "to": "invariant:no.global.mutable.state",
+      "kind": "defines"
+    },
+    {
+      "from": "project:go-service",
+      "to": "invariant:interface.boundary.discipline",
+      "kind": "defines"
+    },
+    {
+      "from": "project:go-service",
+      "to": "failure_mode:goroutine.leak.on.cancel",
+      "kind": "knows_failure_mode"
+    },
+    {
+      "from": "project:go-service",
+      "to": "failure_mode:double.write.on.retry",
+      "kind": "knows_failure_mode"
+    },
+    {
+      "from": "project:go-service",
+      "to": "failure_mode:race.on.global.counter",
+      "kind": "knows_failure_mode"
+    },
+    {
+      "from": "project:go-service",
+      "to": "forbidden_fix:no.time.sleep.in.handler",
+      "kind": "forbids_fix"
+    },
+    {
+      "from": "project:go-service",
+      "to": "forbidden_fix:no.goroutine.in.init",
+      "kind": "forbids_fix"
+    },
+    {
+      "from": "project:go-service",
+      "to": "forbidden_fix:no.package.level.var.mutex",
+      "kind": "forbids_fix"
+    },
+    {
+      "from": "failure_mode:goroutine.leak.on.cancel",
+      "to": "invariant:context.propagation.required",
+      "kind": "related_to"
+    },
+    {
+      "from": "failure_mode:goroutine.leak.on.cancel",
+      "to": "invariant:goroutine.bounds.enforced",
+      "kind": "related_to"
+    },
+    {
+      "from": "failure_mode:double.write.on.retry",
+      "to": "invariant:idempotency.required",
+      "kind": "related_to"
+    },
+    {
+      "from": "failure_mode:race.on.global.counter",
+      "to": "invariant:goroutine.bounds.enforced",
+      "kind": "related_to"
+    },
+    {
+      "from": "failure_mode:race.on.global.counter",
+      "to": "invariant:no.global.mutable.state",
+      "kind": "related_to"
+    },
+    {
+      "from": "forbidden_fix:no.time.sleep.in.handler",
+      "to": "invariant:context.propagation.required",
+      "kind": "protects"
+    },
+    {
+      "from": "forbidden_fix:no.time.sleep.in.handler",
+      "to": "invariant:goroutine.bounds.enforced",
+      "kind": "protects"
+    },
+    {
+      "from": "forbidden_fix:no.goroutine.in.init",
+      "to": "invariant:context.propagation.required",
+      "kind": "protects"
+    },
+    {
+      "from": "forbidden_fix:no.goroutine.in.init",
+      "to": "invariant:goroutine.bounds.enforced",
+      "kind": "protects"
+    },
+    {
+      "from": "forbidden_fix:no.package.level.var.mutex",
+      "to": "invariant:no.global.mutable.state",
+      "kind": "protects"
+    }
+  ]
+}

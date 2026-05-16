@@ -2,23 +2,6 @@ package preflight
 
 import "strings"
 
-// TaskClass labels the nature of a task for agent routing.
-type TaskClass string
-
-const (
-	ClassLocalCodeChange       TaskClass = "LOCAL_CODE_CHANGE"
-	ClassArchitectureSensitive TaskClass = "ARCHITECTURE_SENSITIVE"
-	ClassConvergenceRisk       TaskClass = "CONVERGENCE_RISK"
-	ClassPackageAdmission      TaskClass = "PACKAGE_ADMISSION"
-	ClassRuntimeIncident       TaskClass = "RUNTIME_INCIDENT"
-	ClassRetryLoop             TaskClass = "RETRY_LOOP"
-	ClassRestartStorm          TaskClass = "RESTART_STORM"
-	ClassStateMismatch         TaskClass = "STATE_MISMATCH"
-	ClassDependencyCycle       TaskClass = "DEPENDENCY_CYCLE"
-	ClassUnknownImpact         TaskClass = "UNKNOWN_IMPACT"
-	ClassStaticFallback        TaskClass = "STATIC_KNOWLEDGE_FALLBACK"
-)
-
 // architectureSensitiveKeywords trigger ARCHITECTURE_SENSITIVE classification.
 var architectureSensitiveKeywords = []string{
 	"retry", "loop", "restart", "drift", "convergence",
@@ -123,30 +106,12 @@ func ClassifyTask(task string) []TaskClass {
 	return classes
 }
 
-// HasClass returns true if the class list contains c.
-func HasClass(classes []TaskClass, c TaskClass) bool {
+// hasClass returns true if the class list contains c.
+func hasClass(classes []TaskClass, c TaskClass) bool {
 	for _, cl := range classes {
 		if cl == c {
 			return true
 		}
 	}
 	return false
-}
-
-// AppendClass adds c to classes if not already present.
-func AppendClass(classes []TaskClass, c TaskClass) []TaskClass {
-	if HasClass(classes, c) {
-		return classes
-	}
-	return append(classes, c)
-}
-
-// hasClass is an unexported wrapper for internal package use.
-func hasClass(classes []TaskClass, c TaskClass) bool {
-	return HasClass(classes, c)
-}
-
-// appendClass is an unexported wrapper for internal package use.
-func appendClass(classes []TaskClass, c TaskClass) []TaskClass {
-	return AppendClass(classes, c)
 }

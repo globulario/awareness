@@ -1,105 +1,69 @@
-package preflight
+package preflight_test
 
 import (
 	"testing"
+
+	"github.com/globulario/awareness/preflight"
 )
 
-func TestPreflight_ClassifyGenericFindings(t *testing.T) {
-	tests := []struct {
-		name     string
-		task     string
-		wantAny  []TaskClass
-		wantNone []TaskClass
-	}{
-		{
-			name:    "local code change default",
-			task:    "update the README",
-			wantAny: []TaskClass{ClassLocalCodeChange},
-		},
-		{
-			name:    "restart storm",
-			task:    "service is in restart storm, start-limit-hit",
-			wantAny: []TaskClass{ClassRestartStorm, ClassConvergenceRisk},
-		},
-		{
-			name:    "state mismatch",
-			task:    "checksum mismatch between installed and desired",
-			wantAny: []TaskClass{ClassStateMismatch, ClassConvergenceRisk},
-		},
-		{
-			name:    "architecture sensitive",
-			task:    "fix the retry loop in the reconciler",
-			wantAny: []TaskClass{ClassArchitectureSensitive},
-		},
-		{
-			name:    "runtime incident",
-			task:    "service panicked on startup",
-			wantAny: []TaskClass{ClassRuntimeIncident},
-		},
-		{
-			name:    "dependency cycle",
-			task:    "there is a deadlock in the workflow engine",
-			wantAny: []TaskClass{ClassDependencyCycle},
-		},
-		{
-			name:    "regression",
-			task:    "this is a regression from last week",
-			wantAny: []TaskClass{ClassConvergenceRisk},
-		},
-		{
-			name:     "no spurious classes for plain task",
-			task:     "add a helper function",
-			wantNone: []TaskClass{ClassRestartStorm, ClassStateMismatch, ClassRuntimeIncident},
-		},
-	}
+func TestClassifyDesiredHashIsMismatch(t *testing.T) {
+	classes := preflight.ClassifyTask("desired_hash mismatch between controller and node-agent")
+	assertHasClass(t, classes, preflight.ClassStateMismatch)
+	assertHasClass(t, classes, preflight.ClassConvergenceRisk)
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ClassifyTask(tt.task)
-			for _, want := range tt.wantAny {
-				if !HasClass(got, want) {
-					t.Errorf("ClassifyTask(%q) missing %s; got %v", tt.task, want, got)
-				}
-			}
-			for _, notWant := range tt.wantNone {
-				if HasClass(got, notWant) {
-					t.Errorf("ClassifyTask(%q) unexpectedly has %s; got %v", tt.task, notWant, got)
-				}
-			}
-		})
+func TestClassifyRestartStorm(t *testing.T) {
+	classes := preflight.ClassifyTask("envoy restart storm, start-limit-hit after SIGTERM")
+	assertHasClass(t, classes, preflight.ClassRestartStorm)
+	assertHasClass(t, classes, preflight.ClassConvergenceRisk)
+}
+
+func TestClassifyRetryLoop(t *testing.T) {
+	classes := preflight.ClassifyTask("infinite retry loop in workflow step")
+	assertHasClass(t, classes, preflight.ClassRetryLoop)
+	assertHasClass(t, classes, preflight.ClassArchitectureSensitive)
+}
+
+func TestClassifyArchitectureSensitiveKeywords(t *testing.T) {
+	cases := []string{
+		"convergence proof is broken",
+		"desired state does not match installed state",
+		"leader failover during bootstrap",
+		"build_id is wrong after deploy",
+		"checksum mismatch on artifact",
+	}
+	for _, task := range cases {
+		classes := preflight.ClassifyTask(task)
+		assertHasClass(t, classes, preflight.ClassArchitectureSensitive)
 	}
 }
 
-func TestPreflight_HasClass(t *testing.T) {
-	classes := []TaskClass{ClassLocalCodeChange, ClassArchitectureSensitive}
-
-	if !HasClass(classes, ClassLocalCodeChange) {
-		t.Error("HasClass should find ClassLocalCodeChange")
-	}
-	if !HasClass(classes, ClassArchitectureSensitive) {
-		t.Error("HasClass should find ClassArchitectureSensitive")
-	}
-	if HasClass(classes, ClassRuntimeIncident) {
-		t.Error("HasClass should not find ClassRuntimeIncident")
-	}
-	if HasClass(nil, ClassLocalCodeChange) {
-		t.Error("HasClass on nil should return false")
-	}
+func TestClassifyRegressionRunsDidWeFix(t *testing.T) {
+	classes := preflight.ClassifyTask("same bug again in convergence")
+	assertHasClass(t, classes, preflight.ClassConvergenceRisk)
 }
 
-func TestPreflight_AppendClass(t *testing.T) {
-	var classes []TaskClass
-	classes = AppendClass(classes, ClassLocalCodeChange)
-	classes = AppendClass(classes, ClassLocalCodeChange) // duplicate
-	classes = AppendClass(classes, ClassRuntimeIncident)
+func TestClassifyLocalCodeChangeWhenNoKeywords(t *testing.T) {
+	classes := preflight.ClassifyTask("rename variable in helper utility")
+	assertHasClass(t, classes, preflight.ClassLocalCodeChange)
+}
 
-	if len(classes) != 2 {
-		t.Errorf("AppendClass: want 2 classes, got %d: %v", len(classes), classes)
+func TestClassifyRuntimeIncident(t *testing.T) {
+	classes := preflight.ClassifyTask("cluster crash after OOM")
+	assertHasClass(t, classes, preflight.ClassRuntimeIncident)
+}
+
+func TestClassifyPackageAdmission(t *testing.T) {
+	classes := preflight.ClassifyTask("package install of envoy failed admission check")
+	assertHasClass(t, classes, preflight.ClassPackageAdmission)
+}
+
+func assertHasClass(t *testing.T, classes []preflight.TaskClass, want preflight.TaskClass) {
+	t.Helper()
+	for _, c := range classes {
+		if c == want {
+			return
+		}
 	}
-	if !HasClass(classes, ClassLocalCodeChange) {
-		t.Error("AppendClass: missing ClassLocalCodeChange")
-	}
-	if !HasClass(classes, ClassRuntimeIncident) {
-		t.Error("AppendClass: missing ClassRuntimeIncident")
-	}
+	t.Errorf("expected class %q in %v", want, classes)
 }

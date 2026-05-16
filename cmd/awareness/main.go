@@ -640,7 +640,7 @@ func runGraphQuery(args []string) {
 	}
 
 	terms := splitTerms(query)
-	var matches []graph.Node
+	var matches []graph.StaticNode
 	for _, n := range gf.Nodes {
 		blob := strings.ToLower(n.ID + " " + n.Kind + " " + n.Label)
 		for _, v := range n.Properties {

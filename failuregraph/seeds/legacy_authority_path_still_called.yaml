@@ -1,0 +1,42 @@
+id: ERRCAT-legacy_authority_path_still_called
+type: ErrorCategory
+name: legacy_authority_path_still_called
+severity: warning
+summary: Old Day-0 or sync path still calls an authoritative write function disabled after authority refactor.
+
+signatures:
+  - "legacy shim called"
+  - "authoritative write suppressed"
+  - "sync path silently fails to persist installed evidence"
+
+symptoms:
+  - id: SYM-authoritative_writes_are_controller_only
+    summary: "Authoritative writes are controller-only but legacy path bypasses this."
+  - id: SYM-disabled_shim_called_during_day0
+    summary: "Disabled shim called during Day-0 bootstrap."
+  - id: SYM-sync_path_fails_to_persist_installed_evidence
+    summary: "Sync path silently fails to persist installed evidence."
+
+causes:
+  - id: CAUSE-old_day0_path_calls_disabled_write_function
+    summary: "Old Day-0 path still calls a write function that was disabled after authority refactor moved ownership to controller commit."
+
+resolutions:
+  - id: RES-replace_legacy_authoritative_writes
+    summary: "Replace legacy authoritative writes with controller commit path."
+  - id: RES-use_normalruntimewrite_if_non_authoritative
+    summary: "Write runtime evidence using NormalRuntimeWrite if explicitly non-authoritative — cannot overwrite controller commit."
+
+wrong_fixes:
+  - id: WRONG-reenable_old_shim_as_authoritative
+    summary: "Do not re-enable old shim as authoritative."
+  - id: WRONG-let_heartbeat_write_controller_owned_state
+    summary: "Do not let heartbeat or node-agent write controller-owned state."
+
+tests:
+  - id: REGTEST-legacy_shim_not_called_for_authoritative_commit
+    summary: "Legacy shim is not called during authoritative controller commit path."
+  - id: REGTEST-runtime_evidence_cannot_overwrite_controller_commit
+    summary: "Runtime evidence write (NormalRuntimeWrite) cannot overwrite an existing controller-committed record."
+  - id: REGTEST-controller_commit_wins
+    summary: "Controller commit always wins — last-write wins only applies within the same authority tier."

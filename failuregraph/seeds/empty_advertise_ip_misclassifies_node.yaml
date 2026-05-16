@@ -1,0 +1,57 @@
+id: ERRCAT-empty_advertise_ip_misclassifies_node
+type: ErrorCategory
+name: empty_advertise_ip_misclassifies_node
+severity: critical
+summary: Doctor / controller code reads NodeIdentity.AdvertiseIp (single string, often empty in production) and compares it against curated stable IP lists, causing false-positive or false-negative classification of pool nodes.
+
+signatures:
+  - "objectstore.write_quorum_lost CRITICAL active_drives=0"
+  - "objectstore.minio.unapproved_path CRITICAL .* /mnt/data"
+  - "objectstore.minio.fingerprint_divergence .*:no_fingerprint"
+  - "Down nodes:.*\\d+\\.\\d+\\.\\d+\\.\\d+.*\\d+\\.\\d+\\.\\d+\\.\\d+.*\\d+\\.\\d+\\.\\d+\\.\\d+"
+
+symptoms:
+  - id: SYM-write_quorum_lost_when_minio_healthy
+    summary: "cluster-doctor reports write_quorum_lost active_drives=0 even though mc admin info shows every drive online."
+  - id: SYM-unapproved_path_on_admitted_disks
+    summary: "cluster-doctor reports unapproved_path for paths that ARE in /globular/objectstore/disk/admitted/."
+  - id: SYM-active_on_non_member_silently_misses_violations
+    summary: "Real out-of-pool MinIO instances go undetected because the rule continues on empty AdvertiseIp."
+  - id: SYM-all_pool_nodes_classified_as_down_simultaneously
+    summary: "Doctor reports every pool node as down at the same instant, regardless of actual systemd state."
+
+causes:
+  - id: CAUSE-advertise_ip_field_unpopulated_by_controller
+    summary: "NodeIdentity.AdvertiseIp is a single-string field separate from the repeated Identity.Ips list. The controller does not currently populate it, so it returns empty for every node."
+  - id: CAUSE-rule_compares_against_advertise_ip_without_fallback
+    summary: "Rule code does `n.GetIdentity().GetAdvertiseIp() == ip` without falling through to Identity.Ips, so the comparison is always `\"\" == \"10.0.0.x\"` → false."
+  - id: CAUSE-vip_holder_identity_ips_first_entry_is_vip
+    summary: "Even if AdvertiseIp were populated from Identity.Ips[0], a keepalived VIP-holder reports the floating VIP as the first IP, not the stable interface IP — same comparison failure shape."
+
+resolutions:
+  - id: RES-iterate_identity_ips_for_membership_test
+    summary: "Build a poolIP→nodeID map by iterating every node's full Identity.Ips list (see nodeIDByPoolIP in cluster_doctor/.../rules/node_ip_matching.go). Match against ANY IP in the list."
+  - id: RES-use_stableip_when_picking_single_representative
+    summary: "When code MUST pick a single representative IP for publication or addressing, use node.StableIP(clusterVIP) which excludes the floating VIP."
+  - id: RES-use_nodeAnyIPInPool_helper
+    summary: "For pool-membership checks in cluster_controller, use the existing nodeAnyIPInPool helper (commit ead2bb94)."
+
+wrong_fixes:
+  - id: WRONG-populate_advertise_ip_from_identity_ips_zero
+    summary: "Setting AdvertiseIp = Identity.Ips[0] just moves the bug — VIP-holder still reports VIP as Ips[0]."
+  - id: WRONG-special_case_keepalived_master
+    summary: "Do not branch on whether a node is the VIP holder; the consumer pattern (iterate IPs) is the correct fix at every site."
+  - id: WRONG-skip_node_when_advertise_ip_empty
+    summary: "Continuing past an empty AdvertiseIp produces silent false-negatives — the bug just moves from false-positive to missing real violations."
+  - id: WRONG-filter_vip_from_node_identity_ips
+    summary: "The node legitimately HAS the VIP as one of its IPs; filtering it out at the source breaks legitimate identity reporting. Filter at the consumer instead."
+
+tests:
+  - id: REGTEST-write_quorum_lost_vip_holder_not_misclassified
+    summary: "TestWriteQuorumLost_VIPHolder_NotMisclassifiedAsDown — empty AdvertiseIp + VIP in Identity.Ips must not produce false-positive write_quorum_lost."
+  - id: REGTEST-write_quorum_lost_real_downtime_still_fires
+    summary: "TestWriteQuorumLost_VIPHolder_RealDowntimeStillFires — fix must not suppress legitimate quorum-loss detection."
+  - id: REGTEST-node_id_by_pool_ip_matches_by_any_ip
+    summary: "TestNodeIDByPoolIP_MatchesByAnyIP — the helper must resolve VIP-holders correctly via their stable IPs."
+  - id: REGTEST-node_id_by_pool_ip_empty_advertise_ip_does_not_poison
+    summary: "TestNodeIDByPoolIP_EmptyAdvertiseIpDoesNotPoison — empty AdvertiseIp must not block lookup when Identity.Ips is populated."

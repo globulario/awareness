@@ -1,0 +1,45 @@
+id: ERRCAT-installed_state_build_id_missing
+type: ErrorCategory
+name: installed_state_build_id_missing
+severity: critical
+summary: Installed-state record has version but no build_id, so it cannot satisfy build_id-pinned desired-state.
+
+signatures:
+  - "missing_package <package> version=<version> build_id=<build_id>"
+  - "installed record missing build_id"
+  - "missing_package despite version match"
+  - "post-install drift loop"
+
+symptoms:
+  - id: SYM-post_install_drift_loop
+    summary: "Post-install drift loop — package reported missing immediately after install."
+  - id: SYM-missing_package_despite_version_match
+    summary: "missing_package event despite version match between installed and desired."
+  - id: SYM-installed_record_has_version_but_no_build_id
+    summary: "Installed-state record has version field but empty build_id field."
+
+causes:
+  - id: CAUSE-version_only_installed_state_after_build_id_refactor
+    summary: "Legacy Day-0 or heartbeat path still writes version-only installed-state after repository build_id refactor changed identity to build_id-pinned."
+
+resolutions:
+  - id: RES-preserve_build_id_through_commit
+    summary: "Preserve build_id through desired, apply request, apply result, controller commit, and installed-state record."
+  - id: RES-backfill_only_through_controller_authority
+    summary: "Backfill missing build_id only through controller authority with proof — not through heartbeat or node-agent."
+
+wrong_fixes:
+  - id: WRONG-relax_drift_scanner_version_only
+    summary: "Do not relax drift scanner to accept version-only installed-state."
+  - id: WRONG-treat_version_as_immutable_identity
+    summary: "Do not treat version string as sole immutable identity after build_id refactor."
+  - id: WRONG-reenable_old_authoritative_shim
+    summary: "Do not re-enable old authoritative shim without runtime/commit boundary."
+
+tests:
+  - id: REGTEST-version_only_installed_state_not_clean
+    summary: "Version-only installed-state cannot satisfy build_id-pinned desired-state."
+  - id: REGTEST-controller_commit_persists_build_id
+    summary: "Controller commit persists build_id to installed-state record."
+  - id: REGTEST-legacy_missing_build_id_backfilled_with_proof
+    summary: "Legacy record missing build_id is backfilled only with controller-authoritative proof."
