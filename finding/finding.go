@@ -15,10 +15,15 @@ const (
 
 // Finding is a single actionable observation produced by Awareness analysis.
 type Finding struct {
-	Code       string            `json:"code"`
-	Severity   Severity          `json:"severity"`
-	Message    string            `json:"message"`
-	File       string            `json:"file,omitempty"`
-	Line       int               `json:"line,omitempty"`
-	Properties map[string]string `json:"properties,omitempty"`
+	Code           string            `json:"code"`
+	Severity       Severity          `json:"severity"`
+	Message        string            `json:"message"`
+	File           string            `json:"file,omitempty"`
+	Line           int               `json:"line,omitempty"`
+	Column         int               `json:"column,omitempty"`
+	Snippet        string            `json:"snippet,omitempty"`
+	Scanner        string            `json:"scanner,omitempty"` // "go_ast", "regex", "runtime", "profile"
+	Suppressed     bool              `json:"suppressed,omitempty"`
+	SuppressReason string            `json:"suppress_reason,omitempty"`
+	Properties     map[string]string `json:"properties,omitempty"`
 }

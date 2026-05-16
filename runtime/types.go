@@ -80,6 +80,57 @@ type StateDeltaFact struct {
 	InstalledVersion string `json:"installed_version,omitempty"`
 }
 
+// RepositoryStatusFact is a generic runtime repository health observation.
+type RepositoryStatusFact struct {
+	Name         string   `json:"name"`
+	Node         string   `json:"node"`
+	Mode         string   `json:"mode"`     // NORMAL, DEGRADED, READ_ONLY, LOCAL_ONLY
+	Healthy      bool     `json:"healthy"`
+	Degraded     bool     `json:"degraded"`
+	ReadOnly     bool     `json:"read_only"`
+	LocalOnly    bool     `json:"local_only"`
+	Reason       string   `json:"reason,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+// ObjectstoreStatusFact is a generic runtime objectstore health observation.
+type ObjectstoreStatusFact struct {
+	Name           string   `json:"name"`
+	Node           string   `json:"node"`
+	Topology       string   `json:"topology"`  // DISTRIBUTED, STANDALONE, DEGRADED
+	Healthy        bool     `json:"healthy"`
+	Degraded       bool     `json:"degraded"`
+	QuorumLost     bool     `json:"quorum_lost"`
+	DataIncomplete bool     `json:"data_incomplete"`
+	Reason         string   `json:"reason,omitempty"`
+	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
+}
+
+// XDSStatusFact is a generic runtime xDS config health observation.
+type XDSStatusFact struct {
+	Name              string   `json:"name"`
+	Node              string   `json:"node"`
+	Generation        string   `json:"generation,omitempty"`
+	AppliedGeneration string   `json:"applied_generation,omitempty"`
+	Healthy           bool     `json:"healthy"`
+	Drifted           bool     `json:"drifted"`
+	Reason            string   `json:"reason,omitempty"`
+	EvidenceRefs      []string `json:"evidence_refs,omitempty"`
+}
+
+// SystemdUnitFact is a generic runtime systemd unit health observation.
+type SystemdUnitFact struct {
+	Unit         string   `json:"unit"`
+	Node         string   `json:"node"`
+	ActiveState  string   `json:"active_state"`  // active, inactive, failed
+	SubState     string   `json:"sub_state"`     // running, exited, dead, start-limit-hit
+	Enabled      bool     `json:"enabled"`
+	Failed       bool     `json:"failed"`
+	Restarting   bool     `json:"restarting"`
+	Reason       string   `json:"reason,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
 // SignalOptions configures a CollectSignals call.
 type SignalOptions struct {
 	Window            time.Duration
@@ -100,4 +151,8 @@ type RuntimeSignals struct {
 	Warnings            []string
 	SourceInfo          []SourceInfo
 	Facts               []Fact
+	RepositoryStatus    []RepositoryStatusFact  `json:"repository_status,omitempty"`
+	ObjectstoreStatus   []ObjectstoreStatusFact `json:"objectstore_status,omitempty"`
+	XDSStatus           []XDSStatusFact         `json:"xds_status,omitempty"`
+	SystemdUnits        []SystemdUnitFact       `json:"systemd_units,omitempty"`
 }
