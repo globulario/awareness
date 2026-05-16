@@ -55,6 +55,14 @@ else
   fail "some examples"
 fi
 
+# ── Graph smoke ───────────────────────────────────────────────────────────────
+section "Graph smoke"
+if bash scripts/smoke-graph.sh; then
+  pass "all graph tests"
+else
+  fail "some graph tests"
+fi
+
 # ── Cadence smoke ─────────────────────────────────────────────────────────────
 if [ -d "$CADENCE_ROOT" ]; then
   section "Cadence smoke"
@@ -64,6 +72,8 @@ if [ -d "$CADENCE_ROOT" ]; then
     go run ./cmd/awareness preflight --changed --project-root "$CADENCE_ROOT"
   run "cadence: bundle build" \
     go run ./cmd/awareness bundle build --project-root "$CADENCE_ROOT" --out /tmp/cadence-awareness-release-check
+  run "cadence: graph build" \
+    go run ./cmd/awareness graph build --project-root "$CADENCE_ROOT"
 else
   echo "(skipping Cadence smoke — CADENCE_ROOT not found: $CADENCE_ROOT)"
 fi

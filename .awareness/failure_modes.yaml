@@ -1,0 +1,58 @@
+failure_modes:
+  - id: services.import.leak
+    severity: critical
+    summary: Transitive import from github.com/globulario/services enters standalone awareness
+    description: |
+      A direct or transitive dependency causes the awareness module to import
+      github.com/globulario/services or another Globular-specific package. This breaks
+      the standalone guarantee and makes the module unusable for non-Globular projects.
+    symptoms:
+      - go build ./... in the awareness repo pulls in Globular runtime dependencies
+      - import wall check (scripts/check-import-wall.sh) fails in CI
+      - Projects that import awareness transitively gain unexpected Globular dependencies
+    root_cause: |
+      A new package or dependency was added without checking whether it transitively imports
+      Globular packages. Common sources: shared proto libraries, internal utility packages
+      that were written for services and imported directly.
+    known_bad_fixes:
+      - Adding a build tag to exclude the import — this hides the problem without solving it
+      - Vendoring the Globular package with a modified module path
+
+  - id: schema.version.drift
+    severity: critical
+    summary: Schema version constant duplicated across repos diverges
+    description: |
+      The schema version string (e.g. "awareness.bundle.v1") is hardcoded in both the
+      awareness standalone repo and the Globular services repo (bundlesync package). When
+      one is updated without updating the other, bundle validation fails because the
+      validator and the builder disagree on the expected schema version.
+    symptoms:
+      - bundlesync.CurrentBundleSchemaVersion != bundle.CurrentSchemaVersion
+      - Bundle validation fails in services with a schema version mismatch error
+      - Bundles built by the standalone CLI are rejected by the services bundlesync validator
+    root_cause: |
+      The schema version was duplicated as a string literal instead of being imported from
+      a shared location. When the standalone repo bumped the version, the services repo
+      was not updated (or vice versa).
+    known_bad_fixes:
+      - Hardcoding both to the same string — this fixes the symptom but leaves the
+        duplication in place, guaranteeing the problem recurs
+
+  - id: adapter.boundary.breach
+    severity: error
+    summary: GlobularAdapter implementation moves into standalone awareness module
+    description: |
+      Code that requires a live Globular cluster (etcd access, gRPC to cluster services,
+      node agent calls) appears in the standalone awareness module instead of behind the
+      Adapter interface in the services repo. This causes NullAdapter projects to fail
+      to build or to panic at runtime when the code path is reached.
+    symptoms:
+      - Cluster-specific imports (etcd client, Globular gRPC stubs) appear in go.mod
+      - NullAdapter projects fail to compile after pulling a new version of awareness
+      - MCP tools that should work offline attempt network calls and fail
+    root_cause: |
+      A feature was implemented directly in the standalone module to avoid the indirection
+      of the Adapter interface. The adapter boundary was not respected during development.
+    known_bad_fixes:
+      - Wrapping the cluster call in a nil check on the adapter — the import still breaks
+        standalone builds even if the code path is never executed

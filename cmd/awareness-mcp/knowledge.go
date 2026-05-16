@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -246,7 +247,7 @@ func graphDBPath(cacheDir string) string {
 	return ""
 }
 
-// ─── Graph JSON query ─────────────────────────────────────────────────────────
+// ─── Graph JSON types ─────────────────────────────────────────────────────────
 
 // graphNode is the minimal JSON shape for a node in a serialised graph.json.
 type graphNode struct {
@@ -256,9 +257,143 @@ type graphNode struct {
 	Properties map[string]string `json:"properties,omitempty"`
 }
 
-type graphFile struct {
-	Nodes []graphNode `json:"nodes"`
+type graphEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Kind string `json:"kind"`
 }
+
+// loadedGraphFile is the full deserialized graph.json.
+type loadedGraphFile struct {
+	SchemaVersion string      `json:"schema_version"`
+	Project       string      `json:"project"`
+	GeneratedAt   time.Time   `json:"generated_at"`
+	Nodes         []graphNode `json:"nodes"`
+	Edges         []graphEdge `json:"edges"`
+}
+
+// graphNodeResult is what the MCP tool returns for a graph node + neighbor.
+type graphNodeResult struct {
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind"`
+	Label      string            `json:"label,omitempty"`
+	Properties map[string]string `json:"properties,omitempty"`
+	EdgeKind   string            `json:"edge_kind,omitempty"`
+}
+
+// loadGraphFile loads a graph.json from the cache directory, falling back to
+// the awareness root cache. Returns an error when no graph file is found.
+func loadGraphFile(cacheDir, awarenessRoot string) (*loadedGraphFile, error) {
+	candidates := []string{}
+	if cacheDir != "" {
+		candidates = append(candidates, filepath.Join(cacheDir, "graph.json"))
+	}
+	if awarenessRoot != "" {
+		candidates = append(candidates, filepath.Join(awarenessRoot, "cache", "graph.json"))
+	}
+	for _, p := range candidates {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var gf loadedGraphFile
+		if err := json.Unmarshal(data, &gf); err != nil {
+			continue
+		}
+		return &gf, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+// lookupNodeInGraph finds the target node and its immediate neighbors.
+// It matches by nodeID prefix (e.g. "invariant:foo") or by file path keywords.
+func lookupNodeInGraph(gf *loadedGraphFile, nodeID, path string, maxNeighbors int) (*graphNodeResult, []graphNodeResult) {
+	if gf == nil {
+		return nil, nil
+	}
+
+	// Build node index.
+	nodeByID := make(map[string]graphNode, len(gf.Nodes))
+	for _, n := range gf.Nodes {
+		nodeByID[n.ID] = n
+	}
+
+	// Find target node.
+	var target *graphNode
+	if nodeID != "" {
+		if n, ok := nodeByID[nodeID]; ok {
+			target = &n
+		}
+		// Prefix match: "invariant:foo" matches "invariant:foo.bar"
+		if target == nil {
+			for _, n := range gf.Nodes {
+				if strings.HasPrefix(n.ID, nodeID) {
+					tmp := n
+					target = &tmp
+					break
+				}
+			}
+		}
+	}
+	// Path-based fallback: find a source_file node whose path matches.
+	if target == nil && path != "" {
+		base := filepath.Base(path)
+		for _, n := range gf.Nodes {
+			if n.Kind == "source_file" {
+				if strings.Contains(n.ID, base) || strings.Contains(n.ID, filepath.ToSlash(path)) {
+					tmp := n
+					target = &tmp
+					break
+				}
+			}
+		}
+	}
+
+	if target == nil {
+		return nil, nil
+	}
+
+	targetResult := &graphNodeResult{
+		ID:         target.ID,
+		Kind:       target.Kind,
+		Label:      target.Label,
+		Properties: target.Properties,
+	}
+
+	// Collect neighbors (depth 1).
+	seen := map[string]bool{target.ID: true}
+	var neighbors []graphNodeResult
+	for _, e := range gf.Edges {
+		if len(neighbors) >= maxNeighbors {
+			break
+		}
+		neighborID := ""
+		edgeKind := e.Kind
+		if e.From == target.ID && !seen[e.To] {
+			neighborID = e.To
+		} else if e.To == target.ID && !seen[e.From] {
+			neighborID = e.From
+			edgeKind = "←" + edgeKind
+		}
+		if neighborID == "" {
+			continue
+		}
+		seen[neighborID] = true
+		if n, ok := nodeByID[neighborID]; ok {
+			neighbors = append(neighbors, graphNodeResult{
+				ID:         n.ID,
+				Kind:       n.Kind,
+				Label:      n.Label,
+				Properties: n.Properties,
+				EdgeKind:   edgeKind,
+			})
+		}
+	}
+
+	return targetResult, neighbors
+}
+
+// ─── Graph JSON query ─────────────────────────────────────────────────────────
 
 // queryGraphJSON loads graph.json and returns nodes whose ID/kind/label/properties
 // contain at least one query term.
@@ -267,7 +402,7 @@ func queryGraphJSON(path, query string, limit int) ([]graphNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	var gf graphFile
+	var gf loadedGraphFile
 	if err := json.Unmarshal(data, &gf); err != nil {
 		return nil, err
 	}

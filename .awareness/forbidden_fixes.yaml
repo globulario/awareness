@@ -1,0 +1,48 @@
+forbidden_fixes:
+  - id: no.hardcode.services.import
+    summary: Never add a direct import of github.com/globulario/services to work around the adapter boundary
+    description: |
+      When a feature requires runtime cluster data, the correct approach is to define a method
+      on the Adapter interface and implement it in both NullAdapter (returns a sensible zero value
+      or an explicit "not available" error) and GlobularAdapter (makes the real RPC call).
+      Importing github.com/globulario/services directly in the standalone module breaks the
+      import wall and makes awareness unusable for non-Globular projects.
+    forbidden_pattern: |
+      import "github.com/globulario/services/..."
+    correct_approach: |
+      Add a method to the Adapter interface. Implement it in NullAdapter to return
+      (zero, ErrRuntimeDisabled). Implement it in GlobularAdapter in the services repo.
+
+  - id: no.duplicate.schema.version
+    summary: Never hardcode the bundle schema version string outside of bundle/bundle.go
+    description: |
+      The schema version string "awareness.bundle.v1" (or any future version) must appear
+      exactly once in the codebase: as the CurrentSchemaVersion constant in the bundle package.
+      All other code that needs the schema version must import and reference that constant.
+      Hardcoding the string in tests, validators, or other packages creates a second source
+      of truth that diverges silently when the version is bumped.
+    forbidden_pattern: |
+      "awareness.bundle.v1"  // as a string literal outside bundle/bundle.go
+    correct_approach: |
+      import "github.com/globulario/awareness/bundle"
+      // use bundle.CurrentSchemaVersion
+
+  - id: no.silent.graph.truncation
+    summary: Never write a partial graph.json on error — write atomically or not at all
+    description: |
+      If graph construction fails partway through, writing a partial graph.json leaves
+      downstream tools (MCP server, preflight, bundle builder) in an inconsistent state.
+      The graph file is trusted as complete; there is no checksum or completeness marker
+      that consumers verify. A partial file causes silent wrong answers, not explicit errors.
+    forbidden_pattern: |
+      // writing graph file inside a loop that may return early on error
+      for node := range nodes {
+          if err := process(node); err != nil {
+              return err  // file already partially written
+          }
+          writeToFile(node)
+      }
+    correct_approach: |
+      Build the complete graph in memory. Write to a temporary file. Rename atomically
+      to the final path only after the full write succeeds. On any error, leave the
+      previous graph.json intact.

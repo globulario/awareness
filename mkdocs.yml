@@ -1,0 +1,39 @@
+site_name: Awareness
+site_description: "Project-aware context, preflight, invariant, bundle, and MCP toolchain for AI-assisted development"
+repo_url: https://github.com/globulario/awareness
+repo_name: globulario/awareness
+
+theme:
+  name: material
+
+nav:
+  - Getting Started: getting-started.md
+  - Concepts:
+      - Project Profile: concepts/project-profile.md
+      - Invariants: concepts/invariants.md
+      - Failure Modes: concepts/failure-modes.md
+      - Forbidden Fixes: concepts/forbidden-fixes.md
+      - Bundles: concepts/bundles.md
+      - Runtime Adapters: concepts/runtime-adapters.md
+      - MCP: concepts/mcp.md
+  - CLI Reference:
+      - awareness: cli/awareness.md
+      - bundle: cli/bundle.md
+      - preflight: cli/preflight.md
+  - MCP Tools:
+      - Claude Code: mcp/claude-code.md
+      - Codex: mcp/codex.md
+      - Tools Reference: mcp/tools.md
+  - Adoption:
+      - Non-Globular Project: adoption/non-globular-project.md
+      - Cadence + MCP: adoption/cadence-mcp.md
+      - MCP Integration: adoption/mcp.md
+      - Migration Guide: adoption/migration-guide.md
+      - Dogfood: adoption/dogfood.md
+  - CI Integration:
+      - GitHub Actions: ci/github-actions.md
+      - Bundle Artifact: ci/bundle-artifact.md
+      - Preflight JSON: ci/preflight-json.md
+  - Releases:
+      - v0.1.0: releases/v0.1.0.md
+  - Architecture: architecture.md

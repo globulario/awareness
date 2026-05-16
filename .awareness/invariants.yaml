@@ -1,0 +1,57 @@
+invariants:
+  - id: import.wall.maintained
+    severity: critical
+    summary: Standalone module must never import Globular-specific packages
+    description: |
+      The awareness module is project-agnostic and must remain importable by any Go project
+      without pulling in github.com/globulario/services or any other Globular runtime dependency.
+      The import wall is enforced by scripts/check-import-wall.sh and verified in CI.
+      Any transitive dependency that reaches Globular-specific packages breaks the standalone
+      guarantee and makes awareness unusable for non-Globular projects.
+    files:
+      - go.mod
+      - go.sum
+
+  - id: schema.version.canonical
+    severity: critical
+    summary: CurrentSchemaVersion in the bundle package is the single source of truth
+    description: |
+      The bundle schema version constant (CurrentSchemaVersion in bundle/bundle.go or equivalent)
+      is the authoritative value. It must never be duplicated as a string literal in other packages
+      or repositories. Any code that needs the schema version must import and reference the constant
+      directly. Duplication causes the services repo (bundlesync) and the standalone repo (bundle)
+      to diverge silently, breaking bundle validation.
+    files:
+      - bundle/
+
+  - id: graph.format.stable
+    severity: error
+    summary: graph.json schema must be backwards-compatible
+    description: |
+      The graph.json file format is consumed by multiple tools and may be cached in bundles.
+      Fields must never be removed or renamed without a migration path. New fields may be added
+      as optional. If a breaking change is required, increment the schema version and provide
+      a migration function. Silent format changes break bundle consumers that were built against
+      an earlier version.
+    files:
+      - graph/
+
+  - id: nulladapter.preferred
+    severity: error
+    summary: Non-Globular projects use NullAdapter; do not add runtime-specific code to standalone tools
+    description: |
+      The adapter boundary exists so that standalone tools (CLI, MCP server, preflight) work
+      correctly with NullAdapter for non-Globular projects. Runtime-specific behavior must live
+      behind the Adapter interface, not in shared code. If a feature requires live cluster access,
+      it must be gated by an adapter capability check, not by a hardcoded call to a Globular RPC.
+    files:
+      - runtime/
+
+  - id: test.coverage.per.package
+    severity: error
+    summary: Every new package must have at least one test file
+    description: |
+      Each Go package added to the awareness module must include at least one _test.go file.
+      This ensures that the package is exercised in CI and that its public API is documented
+      by example. Empty test files are not acceptable — the test must exercise at least one
+      exported function or type.

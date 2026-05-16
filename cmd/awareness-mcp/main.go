@@ -540,7 +540,7 @@ func registerTools(srv *mcpServer) {
 
 	srv.register(toolDef{
 		Name:        "awareness_node_context",
-		Description: "Return awareness context for a specific file path or knowledge node ID. Returns related invariants, failure modes, and forbidden fixes from the project knowledge files.",
+		Description: "Return awareness context for a specific file path or knowledge node ID. Returns the node itself (when found in the graph), direct graph neighbors, related invariants, failure modes, and forbidden fixes. Falls back to YAML keyword search when no graph is available.",
 		InputSchema: inputSchema{
 			Type: "object",
 			Properties: map[string]propSchema{
@@ -552,17 +552,37 @@ func registerTools(srv *mcpServer) {
 					Type:        "string",
 					Description: "Awareness node ID (e.g. 'invariant:process.state.determinism') to look up.",
 				},
+				"max_neighbors": {
+					Type:        "number",
+					Description: "Maximum neighbor nodes to return. Default 10.",
+					Default:     10,
+				},
 			},
 		},
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		path, _ := args["path"].(string)
 		nodeID, _ := args["node_id"].(string)
+		maxNeighbors := 10
+		if v, ok := args["max_neighbors"].(float64); ok && v > 0 {
+			maxNeighbors = int(v)
+		}
 
 		ref := strings.TrimSpace(path + " " + nodeID)
 		if ref == "" {
 			return nil, fmt.Errorf("one of 'path' or 'node_id' is required")
 		}
 
+		var warnings []string
+
+		// Try graph lookup first.
+		var graphNode *graphNodeResult
+		var graphNeighbors []graphNodeResult
+
+		if gf, loadErr := loadGraphFile(prof.Graph.CacheDir, prof.Awareness.Root); loadErr == nil {
+			graphNode, graphNeighbors = lookupNodeInGraph(gf, nodeID, path, maxNeighbors)
+		}
+
+		// Always do YAML keyword search for invariants/failure_modes/forbidden_fixes.
 		invariants := loadInvariants(prof.Awareness.Invariants)
 		failureModes := loadFailureModes(prof.Awareness.FailureModes)
 		forbiddenFixes := loadForbiddenFixes(prof.Awareness.ForbiddenFixes)
@@ -570,7 +590,6 @@ func registerTools(srv *mcpServer) {
 		matchedInvariants := searchInvariants(invariants, ref, 10)
 		matchedFailureModes := searchFailureModes(failureModes, ref, 10)
 
-		// forbidden fixes: simple text search
 		terms := knowledgeTerms(ref)
 		var matchedFixes []ForbiddenFixEntry
 		for _, f := range forbiddenFixes {
@@ -583,22 +602,31 @@ func registerTools(srv *mcpServer) {
 			}
 		}
 
-		var warnings []string
 		if len(prof.Awareness.Invariants) == 0 {
 			warnings = append(warnings, "no invariants files configured in profile")
 		}
 
-		return map[string]interface{}{
-			"project":          prof.Name,
-			"ref":              ref,
-			"invariants":       matchedInvariants,
-			"failure_modes":    matchedFailureModes,
-			"forbidden_fixes":  matchedFixes,
-			"invariant_count":  len(matchedInvariants),
-			"failure_mode_count": len(matchedFailureModes),
+		result := map[string]interface{}{
+			"project":             prof.Name,
+			"ref":                 ref,
+			"invariants":          matchedInvariants,
+			"failure_modes":       matchedFailureModes,
+			"forbidden_fixes":     matchedFixes,
+			"invariant_count":     len(matchedInvariants),
+			"failure_mode_count":  len(matchedFailureModes),
 			"forbidden_fix_count": len(matchedFixes),
-			"warnings":         warnings,
-		}, nil
+			"warnings":            warnings,
+		}
+
+		if graphNode != nil {
+			result["graph_node"] = graphNode
+			result["graph_neighbors"] = graphNeighbors
+			result["graph_neighbor_count"] = len(graphNeighbors)
+		} else {
+			result["graph_available"] = false
+		}
+
+		return result, nil
 	})
 
 	// ── awareness_invariant_lookup ─────────────────────────────────────────────

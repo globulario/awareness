@@ -8,6 +8,12 @@
 // types that the engine will implement.
 package graph
 
+import "time"
+
+// CurrentGraphSchemaVersion is the schema version for graph files produced by
+// this module's builder.
+const CurrentGraphSchemaVersion = "awareness.graph.v1"
+
 // Node is a vertex in the Awareness knowledge graph. Nodes represent files,
 // packages, invariants, failure modes, tests, services, findings, and other
 // entities that Awareness reasons about.
@@ -32,4 +38,14 @@ type Edge struct {
 type Graph struct {
 	Nodes []Node `json:"nodes"`
 	Edges []Edge `json:"edges"`
+}
+
+// GraphFile is the top-level serialisation format for a graph.json file.
+// It wraps Graph with metadata fields that identify the schema version,
+// the project the graph was built from, and the build timestamp.
+type GraphFile struct {
+	SchemaVersion string    `json:"schema_version"`
+	Project       string    `json:"project"`
+	GeneratedAt   time.Time `json:"generated_at"`
+	Graph
 }

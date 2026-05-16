@@ -1,0 +1,30 @@
+name: awareness
+kind: library
+
+runtime:
+  enabled: false
+  adapter: null
+
+languages:
+  go: true
+  yaml: true
+  markdown: true
+
+source_roots:
+  - cmd
+  - bundle
+  - preflight
+  - project
+  - runtime
+  - graph
+  - evidence
+  - finding
+
+awareness:
+  root: .awareness
+  invariants:
+    - .awareness/invariants.yaml
+  failure_modes:
+    - .awareness/failure_modes.yaml
+  forbidden_fixes:
+    - .awareness/forbidden_fixes.yaml
