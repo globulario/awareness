@@ -21,10 +21,9 @@ func openGraph(t *testing.T) *graph.Graph {
 }
 
 // realDocsDir returns the docs/awareness directory relative to this package.
-// The metrics package lives at golang/awareness/extractors/metrics/ so we go
-// up four levels to reach the repo root, then down into docs/awareness.
+// The metrics package lives at awareness/extractors/metrics/ — 2 levels up.
 func realDocsDir() string {
-	return filepath.Join("..", "..", "..", "..", "docs", "awareness")
+	return filepath.Join("..", "..", "docs", "awareness")
 }
 
 // TestMetricKnowledgeIndexer_LoadsMetricQueries verifies that the extractor

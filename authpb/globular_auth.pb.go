@@ -235,7 +235,7 @@ const file_globular_auth_proto_rawDesc = "" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12!\n" +
 	"\fscope_anchor\x18\x02 \x01(\bR\vscopeAnchor:P\n" +
 	"\x05authz\x12\x1e.google.protobuf.MethodOptions\x18І\x03 \x01(\v2\x18.globular.auth.AuthzRuleR\x05authz:Y\n" +
-	"\bresource\x12\x1d.google.protobuf.FieldOptions\x18ц\x03 \x01(\v2\x1c.globular.auth.ResourceFieldR\bresourceB.Z,github.com/globulario/services/golang/authpbb\x06proto3"
+	"\bresource\x12\x1d.google.protobuf.FieldOptions\x18ц\x03 \x01(\v2\x1c.globular.auth.ResourceFieldR\bresourceB(Z&github.com/globulario/awareness/authpbb\x06proto3"
 
 var (
 	file_globular_auth_proto_rawDescOnce sync.Once

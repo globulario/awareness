@@ -1,0 +1,87 @@
+preflight_questions:
+  - id: preflight.objectstore_change
+    title: Objectstore / MinIO change preflight
+    when:
+      task_terms:
+        - objectstore
+        - MinIO
+        - minio
+        - quorum
+        - pool
+        - erasure
+        - bucket
+      paths:
+        - golang/node_agent/objectstore/**
+        - golang/cluster_controller/objectstore/**
+        - golang/awareness/runtime/objectstore/**
+    questions:
+      - "Which layer are you modifying: desired, installed, runtime, inventory, or evidence?"
+      - "What evidence distinguishes a node that is down from a node absent from the inventory snapshot?"
+      - "Which forbidden assumptions apply to this change?"
+      - "Which regression test proves the quorum classification is correct for partial snapshots?"
+    blocking_if_unanswered:
+      - evidence distinction between down and uncertain
+      - regression test for quorum classification
+
+  - id: preflight.desired_state_change
+    title: Desired state mutation preflight
+    when:
+      task_terms:
+        - desired state
+        - DesiredService
+        - build_id
+        - version resolution
+        - convergence target
+      paths:
+        - golang/cluster_controller/**
+    questions:
+      - "Are you reading or writing desired state? Which etcd key?"
+      - "If writing, is the build_id being resolved from a version string or persisted directly?"
+      - "Does this change allow desired build_id to be overwritten after resolution?"
+      - "Which node-agent path reads this desired state, and does it handle absent keys safely?"
+    blocking_if_unanswered:
+      - build_id immutability guarantee
+      - absent key handling
+
+  - id: preflight.node_agent_install_change
+    title: Node agent install / package management preflight
+    when:
+      task_terms:
+        - install
+        - installed state
+        - heartbeat
+        - pkill
+        - ExecStartPre
+        - node agent
+      paths:
+        - golang/node_agent/**
+        - packages/metadata/**
+    questions:
+      - "Does this change write to etcd after install completes? Is the write before the RPC returns?"
+      - "Are you using pkill? If so, does it use -x (exact match) not -f (argv match)?"
+      - "Does this change mix installed state and desired state?"
+      - "Does the ExecStartPre or stop script target the correct binary name?"
+    blocking_if_unanswered:
+      - etcd commit before RPC return
+      - pkill flag verification
+
+  - id: preflight.awareness_graph_change
+    title: Awareness graph / YAML knowledge change preflight
+    when:
+      task_terms:
+        - awareness
+        - graph
+        - invariants
+        - failure modes
+        - preflight
+        - knowledge
+      paths:
+        - golang/awareness/**
+        - docs/awareness/**
+    questions:
+      - "After editing YAML files, have you rebuilt the awareness graph? (awareness build)"
+      - "Does this change add new invariants without also adding proven_by links?"
+      - "If the graph is stale, does the MCP tool expose graph_freshness so the caller knows?"
+      - "Are new YAML IDs referenced by at least one test or incident?"
+    blocking_if_unanswered:
+      - graph rebuild after YAML edit

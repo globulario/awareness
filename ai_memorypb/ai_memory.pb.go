@@ -1495,7 +1495,7 @@ const file_ai_memory_proto_rawDesc = "" +
 	"\x0eai.memory.read\x12\x04read\"\x13/ai/memory/sessions*\x06viewer\x12h\n" +
 	"\x04Stop\x12\x16.ai_memory.StopRequest\x1a\x17.ai_memory.StopResponse\"/\x82\xb5\x18+\n" +
 	"\x0fai.memory.admin\x12\x05write\x1a\n" +
-	"/ai/memory*\x05adminB=Z;github.com/globulario/awareness/ai_memorypbb\x06proto3"
+	"/ai/memory*\x05adminB-Z+github.com/globulario/awareness/ai_memorypbb\x06proto3"
 
 var (
 	file_ai_memory_proto_rawDescOnce sync.Once

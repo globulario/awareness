@@ -1,0 +1,74 @@
+incident_id: INC-2026-0002
+title: "MCP service orphaned processes hold port 10260, blocking WaitActive and install convergence"
+status: RESOLVED
+severity: HIGH
+time_range:
+  from: "2026-05-06T21:39:00Z"
+  to: "2026-05-06T22:07:00Z"
+
+symptoms:
+  - "globular-mcp.service stays in 'activating (start)' indefinitely, never reaching 'active (running)'"
+  - "systemd kills mcp_server after TimeoutStartSec (90s) with 'start operation timed out'"
+  - "New mcp_server instances fail to bind port 10260: 'address already in use'"
+  - "Orphaned mcp_server processes survive systemd kills and hold port 10260"
+  - "node-agent WaitActive(30s) times out after install — marks install FAILED, installed state stays at old version"
+  - "node reports: day1_phase_reason = workloads not ready: mcp"
+  - "Drift: desired=1.2.15, installed=1.2.14 persists despite artifact being downloaded and pinned"
+  - "Manual intervention required: sudo killall -9 mcp_server"
+
+observed_services:
+  - mcp
+  - node_agent
+
+root_cause: |
+  Two compounding bugs:
+
+  1. mcp_server (transport_http.go) used Type=notify in its systemd unit but never called
+     sd_notify("READY=1") after binding the port. systemd therefore never transitioned
+     the service from 'activating' to 'active', and killed it after TimeoutStartSec (90s).
+
+  2. When systemd killed a mcp_server instance due to start timeout, a race between
+     the kill completion and Restart=always/RestartSec=2 left the old process holding
+     port 10260 long enough for the next instance to fail to bind. Over multiple restart
+     cycles, orphaned mcp_server processes accumulated (PPid=1, escaped cgroup), each
+     holding the port.
+
+  The node-agent's apply_package_release.go calls supervisor.WaitActive(unit, 30s)
+  after installing a new binary. Because mcp never became 'active', WaitActive timed
+  out and the installed-state etcd key was never updated to the new version, causing
+  persistent drift even though the binary on disk was already replaced.
+
+state_deltas:
+  - "Before fix: mcp never sends READY=1; orphaned processes hold port 10260; WaitActive times out"
+  - "After fix (sd_notify): mcp sends READY=1 after net.Listen succeeds; service reaches active; WaitActive succeeds"
+
+manual_intervention_used:
+  - "sudo kill -9 <pid>  — killed specific orphaned mcp_server"
+  - "sudo killall -9 mcp_server — cleared all orphaned instances to free port 10260"
+  - "These kills should not be needed once sd_notify fix is deployed"
+
+fix_applied:
+  file: golang/mcp/transport_http.go
+  change: |
+    Added sdNotifyReady(ctx) call in serveHTTP() immediately after net.Listen succeeds
+    and updateMCPJsonFiles() completes. sdNotifyReady sends READY=1 to systemd via
+    NOTIFY_SOCKET, then starts a watchdog goroutine sending WATCHDOG=1 every 30s
+    (half of WatchdogSec=60 from unit file). Also sends STOPPING=1 on ctx.Done().
+  prevents:
+    - systemd killing mcp_server after TimeoutStartSec
+    - WaitActive timeout in node-agent after install
+    - orphaned processes accumulating across restart cycles
+    - port 10260 being held across restarts
+
+remaining_risk: |
+  If a future mcp_server instance takes longer than TimeoutStartSec to bind the port
+  (e.g. 10 retries × 3s = 30s, plus startup overhead), READY=1 could still arrive
+  late. The unit file does not set TimeoutStartSec explicitly (defaults to 90s), which
+  gives enough headroom for the current retry logic (max 30s). Recommend adding
+  ExecStartPre cleanup as defence-in-depth: pkill -9 -x mcp_server || true.
+  Must use -x (process-name match), never -f — -f matches the parent shell's argv and self-SIGKILLs.
+
+invariants_touched:
+  - runtime.installed_state_not_liveness
+  - convergence.no_infinite_retry
+  - install.result.atomic_commit

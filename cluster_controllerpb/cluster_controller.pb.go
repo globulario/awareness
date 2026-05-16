@@ -6336,7 +6336,7 @@ const file_cluster_controller_proto_rawDesc = "" +
 	"\x10ResignLeadership\x12+.cluster_controller.ResignLeadershipRequest\x1a,.cluster_controller.ResignLeadershipResponse\"X\x82\xb5\x18T\n" +
 	"$cluster_controller.leadership.resign\x12\x05admin\x1a\x1e/cluster_controller/leadership*\x05admin\x12\xe1\x01\n" +
 	"\x19DeployControlPlanePackage\x124.cluster_controller.DeployControlPlanePackageRequest\x1a5.cluster_controller.DeployControlPlanePackageResponse\"W\x82\xb5\x18S\n" +
-	"'cluster_controller.deploy.control_plane\x12\x05admin\x1a\x1a/cluster_controller/deploy*\x05adminBdZbgithub.com/globulario/awareness/cluster_controllerpb;cluster_controllerpbb\x06proto3"
+	"'cluster_controller.deploy.control_plane\x12\x05admin\x1a\x1a/cluster_controller/deploy*\x05adminBKZIgithub.com/globulario/awareness/cluster_controllerpb;cluster_controllerpbb\x06proto3"
 
 var (
 	file_cluster_controller_proto_rawDescOnce sync.Once

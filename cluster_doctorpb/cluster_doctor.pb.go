@@ -2639,7 +2639,7 @@ const file_cluster_doctor_proto_rawDesc = "" +
 	"\x18StartRemediationWorkflow\x12/.cluster_doctor.StartRemediationWorkflowRequest\x1a0.cluster_doctor.StartRemediationWorkflowResponse\"d\x82\xb5\x18`\n" +
 	")cluster_doctor.remediation.workflow_start\x12\x05write\x1a%/cluster_doctor/findings/{finding_id}*\x05admin\x12\xa6\x01\n" +
 	"\x0eGetHealHistory\x12%.cluster_doctor.GetHealHistoryRequest\x1a&.cluster_doctor.GetHealHistoryResponse\"E\x82\xb5\x18A\n" +
-	"\x1bcluster_doctor.heal.history\x12\x04read\x1a\x14/cluster_doctor/heal*\x06viewerBXZVgithub.com/globulario/awareness/cluster_doctorpb;cluster_doctorpbb\x06proto3"
+	"\x1bcluster_doctor.heal.history\x12\x04read\x1a\x14/cluster_doctor/heal*\x06viewerBCZAgithub.com/globulario/awareness/cluster_doctorpb;cluster_doctorpbb\x06proto3"
 
 var (
 	file_cluster_doctor_proto_rawDescOnce sync.Once

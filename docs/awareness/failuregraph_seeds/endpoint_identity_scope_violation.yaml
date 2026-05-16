@@ -1,0 +1,47 @@
+id: ERRCAT-endpoint_identity_scope_violation
+type: ErrorCategory
+name: endpoint_identity_scope_violation
+severity: critical
+summary: Advertised endpoint and TLS identity drifted — VIP or stale DNS used outside its identity contract.
+
+signatures:
+  - "x509 certificate is valid for <dns> not <ip>"
+  - "x509 certificate is valid for <dns> not <dns>"
+  - "tls handshake error remote error"
+  - "certificate is valid for"
+
+symptoms:
+  - id: SYM-tls_san_mismatch
+    summary: "TLS SAN mismatch."
+  - id: SYM-x509_certificate_valid_for_x_not_y
+    summary: "x509: certificate is valid for X, not Y."
+  - id: SYM-cli_endpoint_uses_vip_not_in_cert_identity
+    summary: "CLI/API endpoint uses VIP or stale IP not covered by cert identity."
+
+causes:
+  - id: CAUSE-advertised_endpoint_and_tls_identity_drifted
+    summary: "Advertised endpoint and TLS identity drifted — e.g. cert issued for hostname but connection uses IP."
+  - id: CAUSE-vip_stale_dns_used_outside_identity_contract
+    summary: "VIP or stale DNS record used outside its identity contract — VIP not in cert SAN."
+
+resolutions:
+  - id: RES-use_canonical_dns_endpoint_with_dns_san
+    summary: "Use canonical DNS endpoint with matching DNS SAN in the TLS certificate."
+  - id: RES-include_ip_in_san_if_ip_is_canonical
+    summary: "Include IP endpoint in IP SAN if IP endpoint is canonical and stable."
+  - id: RES-ensure_clients_derive_servername_from_identity
+    summary: "Ensure clients derive ServerName from the identity contract, not from resolved addresses."
+
+wrong_fixes:
+  - id: WRONG-disable_tls_verification_identity
+    summary: "Do not disable TLS verification."
+  - id: WRONG-hardcode_127_0_0_1_localhost
+    summary: "Do not hardcode 127.0.0.1 or localhost."
+  - id: WRONG-accept_any_certificate
+    summary: "Do not configure clients to accept any certificate."
+
+tests:
+  - id: REGTEST-advertised_endpoint_matches_cert_san
+    summary: "Advertised endpoint matches at least one DNS or IP SAN in the TLS certificate."
+  - id: REGTEST-client_servername_matches_endpoint_identity
+    summary: "Client ServerName matches the endpoint identity contract."

@@ -1,0 +1,161 @@
+# service_contracts.yaml
+# Graph contracts for Globular service dependencies.
+# These encode MEANING (what should be true), not live state.
+# Packaged in every awareness bundle so remote nodes without source can classify failures.
+#
+# bundle = map   runtime evidence = terrain   classifier = navigator
+
+version: "1"
+schema: "globular.awareness.service_contracts/v1"
+
+contracts:
+
+  - id: contract.workflow.scylla_dependency
+    service: workflow
+    kind: dependency
+    summary: >
+      The workflow service depends on ScyllaDB for durable receipt storage and
+      event emission. If Scylla is not ready, workflow-backed remediation that
+      requires Scylla durability is unsafe.
+    depends_on:
+      - service: scylla
+        reason: receipt_storage_and_event_emission
+        gate: SCYLLA_READY
+    gates:
+      requires_before_remediation:
+        - SCYLLA_READY
+    classifications:
+      when_dependency_not_ready: WORKFLOW_REMEDIATION_UNSAFE
+      overall: JOINED_BUT_DEPENDENCY_BLOCKED
+    forbidden_actions:
+      - run_workflow_backed_destructive_repair_while_workflow_backend_unhealthy
+      - mark_workflow_ready_based_only_on_process_status
+      - retry_workflow_service_forever_when_dependency_blocked
+    safe_degraded_modes:
+      - run_workflow_backed_repair_that_does_not_require_scylla_durability
+    runtime_proof:
+      - systemd unit globular-workflow.service active
+      - port 10004 listening
+      - workflow receipts writable (requires Scylla)
+
+  - id: contract.repository.scylla_metadata
+    service: repository
+    kind: dependency
+    summary: >
+      The repository service uses ScyllaDB as its metadata backend.
+      When Scylla is unavailable, repository operates in READ_ONLY or degraded mode.
+    depends_on:
+      - service: scylla
+        reason: artifact_metadata_backend
+        gate: SCYLLA_READY
+    depends_on_objectstore:
+      - service: minio
+        reason: artifact_blob_backend
+        gate: OBJECTSTORE_READY
+    classifications:
+      scylla_down: REPOSITORY_METADATA_BACKEND_UNAVAILABLE
+      minio_down: REPOSITORY_BLOB_BACKEND_UNAVAILABLE
+      both_down: REPOSITORY_DEGRADED
+    runtime_proof:
+      - systemd unit globular-repository.service active
+      - scylla CQL on port 9042 reachable
+      - minio on port 9000 reachable
+
+  - id: contract.minio.topology_contract
+    service: minio
+    kind: topology
+    summary: >
+      MinIO must not run without an approved ObjectStoreDesiredState contract.
+      Starting MinIO outside the desired pool or without a rendered distributed.conf
+      creates a split-brain objectstore.
+    authority_source: etcd:/globular/objectstore/config
+    requires:
+      - ObjectStoreDesiredState exists in etcd
+      - node is in desired pool
+      - minio.env rendered from approved topology
+      - distributed.conf rendered from approved topology
+    forbidden_actions:
+      - wipe_minio_data_without_approved_topology_transition
+      - start_minio_on_node_outside_desired_pool
+      - use_round_robin_dns_for_authoritative_writes
+    runtime_proof:
+      - systemd unit minio.service active
+      - port 9000 listening
+      - health endpoint /minio/health/live responds 200
+
+  - id: contract.scylla.topology_and_readiness
+    service: scylla
+    kind: topology
+    summary: >
+      ScyllaDB is a topology-sensitive dependency. Seed list, listen_address, and
+      rpc_address must match the approved cluster topology. Cluster_name must match.
+      All downstream services (workflow, event, resource, repository) depend on Scylla.
+    authority_source: etcd:/globular/scylla/hosts
+    requires:
+      - seed_provider seeds match etcd topology
+      - listen_address matches node IP
+      - rpc_address matches node IP
+      - cluster_name consistent across nodes
+    gates_downstream:
+      - workflow
+      - event
+      - resource
+      - repository
+    classifications:
+      config_mismatch: SCYLLA_CONFIG_AUTHORITY_DRIFT
+      service_failed: SCYLLA_SERVICE_FAILED
+      port_closed: SCYLLA_CQL_UNREACHABLE
+      data_dir_mismatch: SCYLLA_DATA_DIR_CLUSTER_MISMATCH
+      dependency_blocked: SCYLLA_DEPENDENCY_GATE_BLOCKED
+    runtime_proof:
+      - systemd unit scylla-server.service active
+      - port 9042 listening (CQL)
+      - port 7000 listening (inter-node)
+      - nodetool status shows UN (Up/Normal) for this node
+
+  - id: contract.gateway.xds_readiness
+    service: gateway
+    kind: routing
+    summary: >
+      Gateway readiness must not be based only on the gateway process being up.
+      It must include xDS application proof and route endpoint health.
+      A running Envoy with a broken route is not a healthy gateway.
+    requires:
+      - xDS bootstrap config exists
+      - Envoy process running
+      - last applied xDS generation matches pending generation
+      - routes point to healthy endpoints
+    classifications:
+      process_up_route_broken: GATEWAY_PROCESS_RUNNING_ROUTE_BROKEN
+      bootstrap_missing: GATEWAY_BOOTSTRAP_MISSING
+      xds_not_applied: XDS_NOT_APPLIED
+      xds_stale: XDS_GENERATION_STALE
+      route_unhealthy: ROUTE_ENDPOINT_UNHEALTHY
+    runtime_proof:
+      - systemd unit envoy.service active
+      - xDS bootstrap config exists at /var/lib/globular/config/xds/bootstrap.yaml
+      - Envoy admin API on port 10000 reachable
+
+  - id: contract.mcp.reachability_and_trust
+    service: mcp
+    kind: interface
+    summary: >
+      MCP is the agent interface and remote witness endpoint.
+      Reachability alone is not enough — the certificate must chain to the cluster CA.
+      MCP must also have the awareness bundle loaded to produce meaningful structured facts.
+    requires:
+      - MCP process running
+      - MCP HTTPS port 10260 reachable
+      - certificate chains to cluster CA
+      - awareness bundle loaded
+    classifications:
+      unreachable: MCP_UNREACHABLE
+      reachable_untrusted: MCP_REACHABLE_UNTRUSTED
+      reachable_bundle_missing: MCP_REACHABLE_AWARENESS_BUNDLE_MISSING
+      reachable_bundle_ready: MCP_REACHABLE_AWARENESS_READY
+      runtime_snapshot_failed: MCP_RUNTIME_SNAPSHOT_FAILED
+    allowed_when_bundle_missing:
+      - fetch awareness bundle from repository
+      - fetch awareness bundle from gateway fallback
+    forbidden_when_bundle_missing:
+      - mark node DAY1_COMPLETE

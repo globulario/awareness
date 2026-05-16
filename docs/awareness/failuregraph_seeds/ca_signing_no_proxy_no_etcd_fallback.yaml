@@ -1,0 +1,61 @@
+id: ERRCAT-ca_signing_no_proxy_no_etcd_fallback
+type: ErrorCategory
+name: ca_signing_no_proxy_no_etcd_fallback
+severity: high
+summary: >
+  The gateway's /sign_ca_certificate handler reads the cluster CA private key
+  ONLY from the local filesystem (/var/lib/globular/pki/ca.key). There is no
+  proxy fallback to a CA-holding peer and no etcd fallback. Joining a node via
+  any non-CA gateway therefore fails at Phase 2.2 with HTTP 400. Whether or
+  when the CA key is replicated across gateways is not enforced by code — it
+  appears to be either operator-managed or done by a reconciler that runs
+  inconsistently.
+
+signatures:
+  - "fail to sign certificate! read ca.key from canonical PKI path"
+  - "open /var/lib/globular/pki/ca.key: no such file or directory"
+  - HTTP 400 from /sign_ca_certificate during a join attempt
+
+symptoms:
+  - id: SYM-join_phase_2_2_dies_silently
+    summary: "Join script exits with no clear error during 'Generating service certificate...'; service.key written but service.crt not refreshed"
+  - id: SYM-orphaned_service_key_no_matching_cert
+    summary: "service.key timestamp is recent (post-failure), service.crt is older — modulus check fails"
+  - id: SYM-ca_gateway_etcd_key_unread_by_gateway
+    summary: "etcd key /globular/bootstrap/ca_gateway_host exists but the gateway's sign handler doesn't read it (changing the value has no effect on signing behavior)"
+
+causes:
+  - id: CAUSE-cap_provider_local_only
+    summary: >
+      caProvider.SignCSR in Globular/internal/gateway/handlers/config/ca_handlers.go
+      reads ca.key directly via os.ReadFile. No proxy, no etcd lookup, no
+      forwarding to a peer that might hold the key.
+  - id: CAUSE-ca_key_distribution_unreliable
+    summary: >
+      Past hp-01 / lenovo joins via the same gateway succeeded — meaning the
+      CA key WAS reachable somehow (either present locally then, or via a
+      forwarding mechanism not visible in current source). Between then and
+      the next repair attempt, the path stopped working. Distribution model
+      is undefined or untracked.
+
+resolutions:
+  - id: RES-resign_locally_using_ca_key
+    summary: >
+      If the failing node has ca.key locally (e.g. ryzen does), sign the cert
+      locally with two openssl commands (req -new + x509 -req). Bypasses the
+      gateway entirely. Produces a matching cert/key pair without involving
+      any remote signer.
+  - id: RES-route_join_through_ryzen_gateway
+    summary: >
+      Use the bootstrap node's gateway (ryzen at the time of writing) for the
+      join script — that gateway has ca.key locally. Set GATEWAY=10.0.0.63:8443
+      in the script, OR re-fetch the script from /join on ryzen.
+
+wrong_fixes:
+  - "Changing /globular/bootstrap/ca_gateway_host in etcd — gateway sign handler does not read it (verified: change had no effect)"
+  - "Adding /etc/hosts entries to redirect FQDN to ryzen — gateway sign handler reads only local file, no forwarding"
+  - "Copying ca.key from ryzen to nuc — works, but propagates a private key that the architecture appears to want centralized; treat as last resort"
+
+tests:
+  - "After enabling cluster CA distribution: every gateway's /sign_ca_certificate returns HTTP 201 for a valid CSR"
+  - "After ca.key absence: at least one alarm fires within one reconcile cycle"

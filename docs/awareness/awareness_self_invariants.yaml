@@ -1,0 +1,201 @@
+# Self-invariants for the Awareness Assurance Layer.
+#
+# These are laws ABOUT the awareness system itself, loaded into the same graph
+# as ordinary invariants. The Assurance Layer treats them as first-class so a
+# violation of "stale bundle blocks safety verdicts" appears in preflight just
+# like a violation of "etcd is the source of truth."
+#
+# These are intentionally short and sharp. The full machinery that enforces
+# them lives in golang/awareness/assurance/.
+
+invariants:
+  - id: awareness.no_match_is_not_safe
+    title: A NO_MATCH awareness result must never be interpreted as evidence that a change is safe
+    severity: critical
+    status: active
+    summary: |
+      Awareness reports NO_MATCH when no failure_mode, invariant, or
+      forbidden_fix in its graph applies to a query. NO_MATCH means
+      "coverage of this query is unknown" — it does NOT mean "we checked
+      and found no problem." Consumers must treat NO_MATCH as
+      verdict=unknown, never as verdict=trusted/usable/limited.
+    protects:
+      symbols:
+        - assurance.Compose
+        - preflight.Run
+      files:
+        - golang/awareness/assurance/envelope.go
+        - golang/awareness/preflight/preflight.go
+    enforcement: |
+      assurance.Compose returns TrustUnknown for any input where
+      MatchFound=false. The TestCompose_NoMatchIsNeverSafe regression test
+      pins this behaviour.
+    required_tests:
+      - TestCompose_NoMatchIsNeverSafe
+    forbidden_fixes:
+      - mapping_no_match_to_trusted_verdict
+      - inferring_safety_from_silent_preflight
+
+  - id: awareness.bundle_must_have_source_sha
+    title: Every awareness bundle must record the source git SHA used to generate it
+    severity: critical
+    status: active
+    summary: |
+      Without a source git SHA, freshness cannot be computed against
+      repo HEAD. The bundle must carry source_commit (and ideally
+      graph_hash) so the assurance layer can answer "is this bundle the
+      one this tree expects?".
+    protects:
+      symbols:
+        - bundlesync.Manifest
+        - assurance.CheckStaleness
+      files:
+        - golang/awareness/bundlesync/bundlesync.go
+        - golang/awareness/assurance/freshness.go
+    enforcement: |
+      Bundle build pipeline writes manifest.source_commit. Manifests with
+      empty source_commit must produce a freshness alarm at runtime.
+    required_tests:
+      - TestCheckStaleness_BundleAgeExceededIsCritical
+      - TestCheckStaleness_BundleOlderThanGraph
+
+  - id: awareness.stale_bundle_blocks_safety_verdict
+    title: A stale bundle may provide hints but must not produce a safety verdict
+    severity: critical
+    status: active
+    summary: |
+      When the assurance layer detects bundle staleness (age, repo drift,
+      or YAML newer than graph), the trust envelope verdict must be
+      capped at TrustStale. Consumers that need a safety verdict must
+      regenerate awareness first.
+    protects:
+      symbols:
+        - assurance.Compose
+        - assurance.CheckStaleness
+      files:
+        - golang/awareness/assurance/envelope.go
+        - golang/awareness/assurance/freshness.go
+    enforcement: |
+      Compose returns TrustStale whenever Freshness != FreshnessFresh,
+      even with strong coverage. Pinned by
+      TestCompose_StaleBundleBlocksSafetyVerdict.
+    required_tests:
+      - TestCompose_StaleBundleBlocksSafetyVerdict
+
+  - id: awareness.failure_mode_requires_test_or_reason
+    title: Every promoted failure mode must link to a regression test or explicitly declare why no test exists
+    severity: high
+    status: active
+    summary: |
+      A failure_mode without a test cannot be re-detected if it recurs.
+      Every entry in failure_modes.yaml must either link to at least one
+      required_test, or carry an explicit no_test_reason field justifying
+      its absence.
+    protects:
+      files:
+        - docs/awareness/failure_modes.yaml
+        - golang/awareness/assurance/coverage.go
+    enforcement: |
+      assurance.ComputeCoverage classifies a failure_mode without tests
+      as CoveragePartial at best (never CoverageWellCovered). Trust
+      envelope downgrades verdicts for such modes.
+
+  - id: awareness.learning_loop_must_close
+    title: A promoted incident must be traceable from incident → failure_mode → invariant or forbidden_fix → test → future detection
+    severity: critical
+    status: active
+    summary: |
+      The failure-learning loop only adds value if a recurring incident
+      triggers awareness on the second occurrence. Every promoted
+      incident must produce or extend a graph path that catches the same
+      pattern next time, otherwise the loop is decorative.
+    protects:
+      symbols:
+        - failurelearning.ProposeUpdate
+        - failurelearning.ApplyProposal
+        - failurelearning.CheckClosure
+        - failuregraph.MatchError
+      files:
+        - golang/awareness/failurelearning/proposal.go
+        - golang/awareness/failurelearning/apply.go
+        - golang/awareness/failuregraph/matcher.go
+    enforcement: |
+      TestLearningLoopClosesOnReoccurrence proves that
+      propose→apply→re-incident→match closes for a novel error.
+    required_tests:
+      - TestLearningLoopClosesOnReoccurrence
+
+  - id: awareness.semantic_diff_authority_move_requires_review
+    title: Semantic-diff authority movement across Repository/Desired/Installed/Runtime layers must require explicit review and strong awareness coverage
+    severity: critical
+    status: active
+    summary: |
+      The 4-layer truth model (Repository → Desired → Installed → Runtime)
+      is sacred. A patch that moves authority between layers (e.g. node
+      agent overriding controller-owned desired state, runtime health
+      deciding package identity) must be flagged by semantic-diff and
+      held to a stricter awareness coverage bar than ordinary changes.
+    protects:
+      symbols:
+        - semanticdiff.AnalyzeDiff
+      files:
+        - golang/awareness/semanticdiff/
+    enforcement: |
+      semanticdiff already detects forbidden layer-authority transitions.
+      The trust envelope must report TrustLimited or worse for any patch
+      whose authority_change.requires_review is true unless coverage is
+      strong AND tests are linked to the relevant invariants.
+
+  - id: awareness.source_scan_requires_verified_repo_root
+    title: Awareness source-scanning tools must use a verified repo root or report unverified — never silently fall back to a wrong tree
+    severity: critical
+    status: active
+    summary: |
+      Any awareness tool that walks a source tree (test discovery,
+      Go-file coverage, integrity check, scan_violations, …) must
+      obtain its root from a single typed primitive that distinguishes
+      Found / Absent / Inaccessible / WrongContext. Silent fallback to
+      os.Getwd() or any other "best guess" path is forbidden: on a
+      production MCP host the cwd is the install dir, contains no
+      source, and turns every scan into a false-critical alarm.
+
+      When the primitive returns anything other than Found, consumers
+      must classify the result as "telemetry unavailable" (info
+      severity), NOT as "evidence missing" (critical severity). The
+      output must distinguish:
+        • real missing tests/files (Found + scanned + zero matches)
+        • source unavailable (Absent / Inaccessible)
+        • scanner misconfigured (WrongContext)
+        • graph unavailable (orthogonal — separate signal)
+    protects:
+      symbols:
+        - awarGitRoot
+        - sourceroot.Resolve
+        - verifyGapTests
+        - GoFileCoverage
+        - integrity.CheckTestReferences
+      files:
+        - golang/awareness/sourceroot/
+        - golang/mcp/tools_awareness.go
+        - golang/mcp/self_review_tool.go
+        - golang/mcp/coverage_report_tool.go
+        - golang/mcp/health_pulse_tool.go
+        - golang/awareness/integrity/testref.go
+        - golang/awareness/enforce/graph_coverage.go
+    enforcement: |
+      sourceroot.Resolve is the single source of truth. Each consumer
+      switches on the typed state. Tests pin three known historical
+      failure shapes: (a) OpenComposite EPERM must not silently fall
+      back to a legacy DB and report critical 0% coverage; (b)
+      verifyGapTests "unverified" must not be counted as tests_not_found;
+      (c) awarGitRoot must not return cwd when not in a git checkout.
+    forbidden_fixes:
+      - collapse_source_absent_into_critical_missing_evidence
+    related_failure_modes:
+      - awareness.degraded_source_sentinel_collapsed_to_critical
+    required_tests:
+      - TestSourceRoot_NotInGitRepoReturnsAbsent
+      - TestSourceRoot_ExplicitPathInvalidReturnsInaccessible
+      - TestAwarGitRoot_NotInRepoReturnsEmpty
+      - TestVerifyGapTests_EmptyRepoRootReturnsUnverified
+      - TestCoverageReport_NoRepoRootIsUnverifiedNotCritical

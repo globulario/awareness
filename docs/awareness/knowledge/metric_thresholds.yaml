@@ -1,0 +1,54 @@
+thresholds:
+  default:
+    cpu_percent:
+      warn: 90
+      critical: 97
+    memory_percent:
+      warn: 90
+      critical: 97
+    disk_percent:
+      warn: 90
+      critical: 95
+
+  etcd:
+    disk_percent:
+      warn: 70
+      critical: 80
+    fsync_latency_ms:
+      warn: 25
+      critical: 100
+    leader_changes_1h:
+      warn: 1
+      critical: 3
+
+  scylla:
+    disk_percent:
+      warn: 80
+      critical: 90
+    unavailable_exceptions:
+      warn: 1
+      critical: 10
+
+  minio:
+    disk_percent:
+      warn: 80
+      critical: 90
+    offline_disks:
+      warn: 1
+      critical: 2
+
+  workflow:
+    failed_runs_15m:
+      warn: 3
+      critical: 10
+    blocked_runs:
+      warn: 1
+      critical: 5
+
+  cluster_controller:
+    reconcile_lag_seconds:
+      warn: 60
+      critical: 300
+    leader_changes_1h:
+      warn: 1
+      critical: 3

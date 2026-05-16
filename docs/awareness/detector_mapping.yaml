@@ -1,0 +1,206 @@
+# detector_mapping.yaml — joins documented failure_modes to the
+# cluster_doctor rules that observe them at runtime.
+#
+# Each entry maps one failure_mode_id to one or more detector_ids (which are
+# cluster_doctor rule IDs from golang/cluster_doctor/.../rules/*.go).
+# The doctor extractor reads this file and emits
+#   detector:<rule_id> --matches_failure_mode--> failure_mode:<fm_id>
+# edges into the awareness graph. That flips the failure_mode from
+# "TESTED" to "DETECTED" / "ENFORCED" in the assurance coverage report.
+#
+# Adding a new mapping is the canonical way to claim "this failure mode is
+# observable in production." A failure_mode with no entry here is one we
+# cannot detect at runtime — it stays at TESTED-only coverage and will not
+# reach well_covered until either:
+#   1) a detector mapping is added here, or
+#   2) the failure_mode is annotated as INTENTIONAL_GAP in failure_modes.yaml.
+#
+# Format:
+#   detector_mappings:
+#     - failure_mode: <fm_id>
+#       detectors: [<doctor_rule_id>, ...]
+#       reason: "<one-line: why these rules detect this failure mode>"
+
+detector_mappings:
+
+  # ── etcd / control-plane stability ────────────────────────────────────────
+  - failure_mode: controller.lease_expired_due_to_etcd_instability
+    detectors:
+      - etcd.quorum
+      - etcd.stale_member
+      - controller.leader_pending_update
+    reason: "etcd quorum loss or a stale member triggers controller lease churn"
+
+  - failure_mode: etcd.leader_instability
+    detectors:
+      - etcd.quorum
+      - controller.leader_pending_update
+    reason: "leader changes show up as quorum or pending-update findings"
+
+  - failure_mode: etcd.nospace_alarm
+    detectors:
+      - etcd.quorum
+    reason: "nospace alarm degrades the etcd cluster shape that quorum check observes"
+
+  # ── critical state / governance ───────────────────────────────────────────
+  - failure_mode: critical_state.absent_key_interpreted_as_stop
+    detectors:
+      - critical_state.ownership_complete
+      - critical_state.registry_presence
+    reason: "missing-key fail-stop is the exact case ownership/registry rules guard"
+
+  - failure_mode: critical_state.accidental_key_deletion
+    detectors: [critical_state.ownership_complete]
+    reason: "ownership rule notices when a critical-state key disappears unexpectedly"
+
+  - failure_mode: critical_state.unregistered_key_governance
+    detectors: [critical_state.registry_presence]
+    reason: "registry presence rule is the governance gate for new critical-state keys"
+
+  # ── bootstrap / convergence ───────────────────────────────────────────────
+  - failure_mode: desired.bootstrap_premature_convergence
+    detectors: [node.bootstrap_stuck]
+    reason: "premature convergence stalls bootstrap; bootstrap_stuck rule fires"
+
+  - failure_mode: install.desired_state.invisible_service
+    detectors:
+      - node.service_registration_gap
+      - package.kind_mismatch
+    reason: "service registration gap is the canonical signal a service is invisible to the controller"
+
+  - failure_mode: install.result.partial_commit
+    detectors: [installed_state_runtime_mismatch]
+    reason: "partial commit shows as installed-vs-runtime mismatch"
+
+  - failure_mode: deterministic.install.failure.retry_loop
+    detectors:
+      - workflow.blocked_runs
+      - workflow.step_failures
+    reason: "retry loops surface as blocked workflow runs and repeated step failures"
+
+  # ── ingress / destructive actions ─────────────────────────────────────────
+  - failure_mode: destructive_actions.ambiguous_disable
+    detectors:
+      - ingress.ambiguous_disable_rejected
+      - ingress.unguarded_disable_intent
+    reason: "ingress safety rules are the destructive-action guards"
+
+  # ── mcp / service endpoints ───────────────────────────────────────────────
+  - failure_mode: mcp.orphan_port_hold
+    detectors: [node.systemd.units_running]
+    reason: "an orphan holding the port shows as a unit reported but unhealthy"
+
+  - failure_mode: mcp.day1_install_no_start
+    detectors: [node.bootstrap_stuck]
+    reason: "Day-1 install that never reaches start blocks bootstrap progress"
+
+  - failure_mode: service.endpoint.port_squatting_cgroup_escape
+    detectors:
+      - node.systemd.units_running
+      - node.agent_crash
+    reason: "cgroup-escaped orphan: systemd reports unit but agent sees mismatch"
+
+  - failure_mode: service.desired_state.pipeline_gap
+    detectors: [node.service_registration_gap]
+    reason: "pipeline gap = no desired-state record = registration gap"
+
+  # ── minio / objectstore ───────────────────────────────────────────────────
+  - failure_mode: minio.version_drift_auth_failure
+    detectors:
+      - objectstore.minio.fingerprint_divergence
+      - objectstore.minio.credentials_missing
+    reason: "version drift produces fingerprint divergence and downstream auth failures"
+
+  - failure_mode: objectstore.local_membership_inference
+    detectors: [objectstore.minio.active_on_non_member]
+    reason: "exactly the rule: minio active where topology says it shouldn't be"
+
+  - failure_mode: objectstore.no_desired_state_governance
+    detectors: [objectstore.no_desired_state]
+    reason: "name-aligned: same governance gap"
+
+  - failure_mode: repository.minio.recovery_cycle
+    detectors:
+      - repository.operational_mode
+      - objectstore.format_heal_deadlock
+    reason: "recovery cycles loop through repository operational-mode + format-heal deadlock"
+
+  - failure_mode: topology.unsafe_drift_applied
+    detectors:
+      - objectstore.minio.topology_consistency
+      - objectstore.minio.destructive_guard
+    reason: "topology consistency + destructive-guard are the two tripwires"
+
+  # ── pki ───────────────────────────────────────────────────────────────────
+  - failure_mode: pki.ca_not_published
+    detectors:
+      - pki.ca_not_published
+      - pki.ca_expiry_warning
+    reason: "name-aligned with the dedicated PKI rule"
+
+  # ── dns / runtime / lkg ───────────────────────────────────────────────────
+  - failure_mode: recovery.dns_required_for_dns_recovery
+    detectors:
+      - dns.serving_last_known_good
+      - dns.zone_reload_failed
+    reason: "DNS-dependent recovery surfaces as LKG-serving and reload failures"
+
+  - failure_mode: runtime.lkg_corrupt_or_missing
+    detectors:
+      - dns.serving_last_known_good
+      - ingress.node_holding_last_known_good
+    reason: "LKG path is observed by the dns and ingress LKG rules"
+
+  - failure_mode: runtime.command_package_false_positive
+    detectors: [package.kind_mismatch]
+    reason: "command-package misclassification triggers kind_mismatch"
+
+  # ── scylla / queries ──────────────────────────────────────────────────────
+  - failure_mode: scylla.critical_keyspace_under_replicated
+    detectors: [scylla.keyspace.rf_policy_violation]
+    reason: "RF policy violation is the canonical under-replication signal"
+
+  - failure_mode: critical_queries.unbounded_hang
+    detectors: [scylla.keyspace.rf_policy_violation]
+    reason: "an under-replicated critical keyspace is the most common cause of unbounded hangs"
+
+  # ── reconcile / drift / xds / workflow ────────────────────────────────────
+  - failure_mode: reconcile.lane_starvation
+    detectors: [reconcile.lane_status_etcd]
+    reason: "lane status rule is the direct readout of starvation"
+
+  - failure_mode: services.drift_never_escalates
+    detectors: [cluster.services.drift]
+    reason: "drift escalation gap is exactly what cluster.services.drift watches"
+
+  - failure_mode: xds.infra_preparing_loop_from_kind_mismatch
+    detectors: [package.kind_mismatch]
+    reason: "kind_mismatch is the root signal that drives the loop"
+
+  - failure_mode: workflow.backend_unavailable
+    detectors: [workflow.service_unavailable]
+    reason: "name-aligned"
+
+  - failure_mode: workflow.dispatch_timeout_due_to_control_plane_instability
+    detectors:
+      - workflow.service_unavailable
+      - workflow.no_activity
+    reason: "dispatch timeout shows as service unavailable and no recent workflow activity"
+
+  - failure_mode: node_agent.state_poisoning_from_stale_reconciler
+    detectors:
+      - node.agent_crash
+      - installed_state_runtime_mismatch
+    reason: "stale reconciler poisoning surfaces via agent crashes and installed-vs-runtime mismatch"
+
+  - failure_mode: release.failed.wave_succeeded_commit_error
+    detectors:
+      - repository.findings
+      - repository.operational_mode
+    reason: "wave-succeeded but commit-error pattern is observable through repository findings"
+
+  # ── intentional gaps (no detector exists; tracked here so meta-check can
+  # tell missing-rule from missing-mapping) ─────────────────────────────────
+  # annotation_scanner_false_positive   — awareness-internal, not a runtime concern
+  # derived_state.projection_blocks_authority — abstract; needs new doctor rule
+  # failure_mode.inc_2026_0002          — incident-named placeholder; rename or remove

@@ -1,0 +1,47 @@
+id: ERRCAT-workflow_blocked_reason_unclassified
+type: ErrorCategory
+name: workflow_blocked_reason_unclassified
+severity: warning
+summary: Workflow stuck in retry loop because blocked state has generic error and closure is unclear.
+
+signatures:
+  - "workflow stuck"
+  - "retry loop continues"
+  - "blocked state has generic error"
+  - "posture gate cluster in recovery_only"
+
+symptoms:
+  - id: SYM-workflow_stuck_in_loop
+    summary: "Workflow stuck — retry count increases with no progress."
+  - id: SYM-blocked_state_has_generic_error
+    summary: "Blocked state has a generic error message with no classification."
+  - id: SYM-closure_unclear
+    summary: "Closure is unclear — no terminal state, no user-camp indicator."
+
+causes:
+  - id: CAUSE-workflow_cannot_classify_block_type
+    summary: "Workflow engine cannot classify whether block is transient, terminal, user-camp, or dependency-gated."
+
+resolutions:
+  - id: RES-add_explicit_blocked_reason
+    summary: "Add explicit blocked reason: transient | terminal | user_camp | dependency_gated."
+  - id: RES-stop_retry_if_rerun_cannot_change_outcome
+    summary: "Stop retry if rerun cannot change outcome — classify as terminal."
+  - id: RES-surface_user_camp_manual_action
+    summary: "Surface user-camp or manual action requirement explicitly when needed."
+
+wrong_fixes:
+  - id: WRONG-retry_forever
+    summary: "Do not retry forever without classifying the block type."
+  - id: WRONG-mark_success_without_verification
+    summary: "Do not mark success without verification."
+  - id: WRONG-delete_stuck_action_without_closure_proof
+    summary: "Do not delete stuck action without closure proof."
+
+tests:
+  - id: REGTEST-terminal_block_does_not_retry
+    summary: "Terminal block type does not trigger retry."
+  - id: REGTEST-transient_block_retries_with_backoff
+    summary: "Transient block retries with exponential backoff."
+  - id: REGTEST-user_camp_block_stops_loop
+    summary: "User-camp block stops the retry loop and surfaces required action."

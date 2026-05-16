@@ -1,0 +1,59 @@
+id: ERRCAT-gateway_join_bin_truncates_large_binary
+type: ErrorCategory
+name: gateway_join_bin_truncates_large_binary
+severity: high
+summary: >
+  The gateway's /join/bin/<binary> endpoint returns a truncated payload (32 KB
+  observed) for large binaries instead of the full file (~28 MB for
+  node_agent_server). The join script writes the truncated content to disk and
+  proceeds (no size or checksum verification). The corrupt binary breaks the
+  next service start. Observed serving from one specific gateway during a repair
+  attempt; ryzen's gateway returned the full size in subsequent tests, so the
+  bug may be intermittent or per-gateway.
+
+signatures:
+  - "missing section headers at"
+  - "exec format error"
+  - node_agent_server file size is exactly 32768 bytes
+  - "/join/bin/" + truncated download (size << expected)
+
+symptoms:
+  - id: SYM-binary_size_32k_exactly
+    summary: "Downloaded binary is exactly 32768 bytes — suspicious round number indicating buffer cut-off"
+  - id: SYM-elf_missing_section_headers
+    summary: "`file <bin>` reports 'missing section headers at <offset>' — ELF header valid, body truncated"
+  - id: SYM-systemctl_start_immediate_exit
+    summary: "Service refuses to start with code=exited, status=1 right after install"
+
+causes:
+  - id: CAUSE-gateway_streaming_bug
+    summary: >
+      Gateway's /join/bin handler likely uses an unbuffered/buffered write path
+      that cuts off at a kernel page or HTTP buffer boundary for large files.
+      Source location not yet identified — handler is in the Globular meta-repo.
+  - id: CAUSE-join_script_no_post_download_verification
+    summary: >
+      The join script's PHASE 4.1 (lines ~293-303) downloads each binary with
+      `curl -sfL ... -o <bin>` then chmod +x, with no size or checksum
+      verification against an expected value. Truncation goes undetected.
+
+resolutions:
+  - id: RES-fetch_binary_from_healthy_peer_via_scp
+    summary: >
+      For recovery: scp /usr/lib/globular/bin/<bin> from any healthy peer.
+      All peers carry CI-built binaries with matching checksums; sharing
+      across peers respects the "no locally-built binary" rule.
+  - id: RES-add_size_and_checksum_verification_to_join_script
+    summary: >
+      Modify Phase 4.1 of the join script to verify size > N bytes AND
+      sha256 matches a known checksum (from etcd package manifest if available).
+      Fail loudly on mismatch instead of silently writing corrupt content.
+
+wrong_fixes:
+  - "Rebuilding the binary locally with `go build` — produces a binary without -ldflags, fails checksum verification cluster-wide (violates 'no locally-built binary' rule)"
+  - "Re-running the join script — same gateway endpoint will likely truncate again"
+
+tests:
+  - "Phase 4.1 of join script verifies downloaded binary size > 1 MB"
+  - "Phase 4.1 verifies sha256 against expected checksum (when published)"
+  - "All gateway nodes return the same byte count for /join/bin/<binary>"

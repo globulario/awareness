@@ -1,0 +1,74 @@
+id: ERRCAT-vip_identity_poisoning_cross_layer
+type: ErrorCategory
+name: vip_identity_poisoning_cross_layer
+severity: critical
+summary: >
+  Cross-layer VIP identity poisoning: the keepalived floating VIP is treated as
+  node identity (instead of ingress-only address), then propagated into member
+  endpoints, bootstrap configs, or endpoint fallbacks. This can evict healthy
+  etcd members, strand node-agent calls on the wrong host, and cascade into
+  control-plane instability.
+
+signatures:
+  - "etcd member list shows node peer URL/IP mismatch after keepalived change"
+  - "globular-etcd enters unstarted or removed state after VIP transition"
+  - "node-agent fallback endpoint resolves to VIP holder instead of target node"
+  - "controller leader election by local IP mismatches node identity"
+
+symptoms:
+  - id: SYM-day1_join_writes_vip_as_etcd_advertise
+    summary: "Day-1 join writes listen/advertise URLs with VIP instead of stable node IP."
+  - id: SYM-node_agent_fallback_dials_wrong_node
+    summary: "Controller fallback dials node-agent via VIP and lands on current VIP holder."
+  - id: SYM-leader_detection_ip_alias_conflict
+    summary: "Controller leader/self matching by PrimaryIP fails when VIP is first routable IP."
+  - id: SYM-cascade_after_keepalived_enable
+    summary: "Enabling keepalived correlates with etcd churn, endpoint drift, and cluster instability."
+
+causes:
+  - id: CAUSE-bootstrap_identity_from_primary_route
+    summary: >
+      scripts/release/install-day1.sh derives NODE_IP from route/hostname order
+      and does not explicitly exclude ingress VIP. If VIP is selected, etcd
+      config is rendered with poisoned identity URLs.
+  - id: CAUSE-fallback_prefers_primaryip
+    summary: >
+      node_agent_endpoint_fallback.go prefers node.PrimaryIP() for direct-IP
+      fallback, which may be VIP on the VIP holder.
+  - id: CAUSE-leader_match_uses_primaryip
+    summary: >
+      workflow_controller_deploy.go compares node.PrimaryIP() to localIP to
+      infer the leader replica, allowing VIP aliasing to skew leader identity.
+
+resolutions:
+  - id: RES-enforce_stableip_for_member_identity
+    summary: >
+      For all member identity surfaces (etcd advertise/listen, scylla hosts,
+      minio pool membership, node-agent direct fallback), use StableIP(clusterVIP)
+      semantics: exclude VIP, use real node NIC IP.
+  - id: RES-separate_ingress_identity_from_member_identity
+    summary: >
+      Treat VIP as ingress-only address; never use VIP as per-node identity.
+      Keep dedicated cluster ingress FQDN for VIP and per-node FQDN for stable IP.
+  - id: RES-add_vip_poisoning_regression_tests
+    summary: >
+      Add regression tests for join/bootstrap, fallback dialing, and leader
+      selection when Identity.Ips order is [VIP, stable].
+
+wrong_fixes:
+  - "Restarting etcd/keepalived loops without repairing identity source selection"
+  - "Adding VIP to etcd member advertise URLs"
+  - "Using --insecure or disabling TLS checks to hide VIP/SAN mismatch"
+  - "Manually editing one node's etcd.yaml without fixing upstream render/bootstrap logic"
+
+checks:
+  - "Audit scripts/release/install-day1.sh: NODE_IP selection must exclude cluster VIP when ingress mode is vip_failover"
+  - "Audit node_agent_endpoint_fallback.go: fallback candidate order must not prioritize PrimaryIP when VIP is known"
+  - "Audit workflow_controller_deploy.go and deploy_control_plane.go: leader/self IP matching must be VIP-aware"
+  - "Verify rendered /var/lib/globular/config/etcd.yaml advertise URLs use stable NIC IP on VIP holder"
+
+tests:
+  - "Join on VIP holder keeps etcd advertise/listen URLs pinned to stable node IP"
+  - "Node-agent fallback never returns cluster VIP when stable IP exists"
+  - "Controller discovery still identifies correct leader when VIP is first in Identity.Ips"
+  - "Keepalived failover does not change etcd member identity or membership"

@@ -1,0 +1,50 @@
+proposal:
+    id: proposal.inc_2026_0001
+    source_incident: INC-2026-0001
+    status: PROMOTED
+    created_at: "2026-05-06T21:58:56Z"
+failure_modes:
+    - id: annotation_scanner_false_positive
+      title: Text-based annotation scanner flags string literal content as real annotations
+      severity: MEDIUM
+      symptoms:
+        - awareness audit reports ERRORs from _test.go files, not production code
+        - 'Flagged lines are inside backtick string literals that embed intentionally-malformed //globular: patterns'
+        - CI gate exits 1 despite no real annotation defect
+      root_cause: |
+        ValidateAnnotations uses line-level text scanning (strings.Split + TrimSpace prefix check). Any line matching the //globular: prefix — even inside multi-line raw string literals — is treated as a real annotation. Test fixture files intentionally embed malformed annotation strings to exercise the validator, causing false-positive ERRORs from the package's own tests.
+      architecture_fix: |
+        Skip _test.go files in ValidateAnnotations, consistent with the goast extractor convention (production //globular: annotations are never written in test files). Single-line WalkDir filter change: !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go").
+      related_services:
+        - awareness/enforce
+      required_tests:
+        - TestValidateAnnotationsSkipsTestFiles
+invariants:
+    - id: awareness.annotation_scanner.production_source_only
+      title: Annotation scanner validates production Go source only
+      severity: ERROR
+      summary: |
+        The awareness annotation validator must not treat //globular: strings inside test fixtures as production annotations. Production annotations are validated from non-test Go source files only.
+      forbidden_fixes:
+        - validate_globular_annotations_inside_test_fixtures
+        - treat_raw_string_fixture_annotations_as_source_annotations
+      required_tests:
+        - TestValidateAnnotationsSkipsTestFiles
+required_tests:
+    - TestValidateAnnotationsSkipsTestFiles
+manual_repairs:
+    - Added `|| strings.HasSuffix(path, "_test.go")` to the skip condition in ValidateAnnotations
+    - 'This matches the goast extractor convention: production annotations only in non-test .go files'
+evidence:
+    source_incident: INC-2026-0001
+    symptoms:
+        - globular awareness audit reports MALFORMED_STATE_TRANSITION and ANNOTATION_BAD_TEST_NAME ERRORs
+        - All 5 ERRORs come from awareness/enforce/annotations_test.go and awareness/enforce/audit_test.go
+        - 'The flagged lines are inside raw string literals (test fixtures), not real //globular: annotations'
+        - audit --strict exits 1 blocking CI even though no production annotation is malformed
+    state_deltas:
+        - 'Before fix: 5 ERRORs from own test files, audit exits 1'
+        - 'After fix: 0 ERRORs, audit PASS'
+    manual_repairs:
+        - Added `|| strings.HasSuffix(path, "_test.go")` to the skip condition in ValidateAnnotations
+        - 'This matches the goast extractor convention: production annotations only in non-test .go files'

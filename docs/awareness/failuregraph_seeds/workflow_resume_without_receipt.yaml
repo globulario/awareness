@@ -1,0 +1,44 @@
+id: ERRCAT-workflow_resume_without_receipt
+type: ErrorCategory
+name: workflow_resume_without_receipt
+severity: critical
+summary: Workflow step side effect completed but receipt was missing or not promoted, causing duplicate dispatch on resume.
+
+signatures:
+  - "workflow repeats side effect after restart"
+  - "action dispatched twice"
+  - "step appears completed locally but workflow resumes as incomplete"
+
+symptoms:
+  - id: SYM-workflow_repeats_side_effect_after_restart
+    summary: "Workflow repeats side effect after service restart."
+  - id: SYM-action_dispatched_twice
+    summary: "Action dispatched twice from the same workflow step."
+  - id: SYM-step_completed_locally_but_resumes_as_incomplete
+    summary: "Step appears completed locally but workflow resumes as if incomplete."
+
+causes:
+  - id: CAUSE-step_side_effect_completed_without_receipt
+    summary: "Step side effect completed but receipt was missing, not terminal, or not promoted before restart."
+
+resolutions:
+  - id: RES-write_receipt_before_side_effect_resumable
+    summary: "Write receipt before considering side effect resumable. Use idempotency key."
+  - id: RES-resume_only_from_proven_receipts
+    summary: "Resume only from proven, promoted receipts — not from local state."
+
+wrong_fixes:
+  - id: WRONG-increase_retry_count_resume
+    summary: "Do not increase retry count to work around duplicate dispatch."
+  - id: WRONG-clear_workflow_action_manually
+    summary: "Do not clear workflow action manually without ensuring side effect is idempotent."
+  - id: WRONG-treat_local_side_effect_as_global_completion
+    summary: "Do not treat local side effect as global completion without a promoted receipt."
+
+tests:
+  - id: REGTEST-restart_after_side_effect_before_receipt
+    summary: "Restart after side effect but before receipt — side effect not duplicated."
+  - id: REGTEST-restart_after_receipt_before_promotion
+    summary: "Restart after receipt but before promotion — resumes from receipt, not from beginning."
+  - id: REGTEST-duplicate_dispatch_prevention
+    summary: "Duplicate dispatch is prevented by idempotency key check."

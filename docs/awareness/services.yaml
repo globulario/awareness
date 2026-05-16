@@ -1,0 +1,1174 @@
+services:
+  # ── Core infrastructure (no proto service, no implementation listing) ──────
+
+  - id: etcd
+    name: etcd
+    summary: Distributed key-value store — sole source of truth for all cluster config and state.
+    systemd_unit: etcd.service
+
+  - id: scylladb
+    name: scylladb
+    summary: Distributed database — stores workflow state, AI memory, and service metadata.
+    systemd_unit: scylla.service
+
+  - id: minio
+    name: minio
+    summary: Object store — caches artifact blobs and hosts large binary data.
+    systemd_unit: globular-minio.service
+    depends_on:
+      - service: node-agent
+        phase: bootstrap_recovery
+        required: false
+        reason: Node agent triggers MinIO topology join workflows.
+
+  # ── Control plane ─────────────────────────────────────────────────────────
+
+  - id: cluster-controller
+    name: cluster-controller
+    summary: Central control plane — reconciles desired state, leads cluster decisions, drives convergence.
+    systemd_unit: globular-cluster-controller.service
+    proto_service: cluster_controller.ClusterControllerService
+    proto_file: proto/cluster_controller.proto
+    implementation:
+      - golang/cluster_controller/cluster_controller_server/server.go
+      - golang/cluster_controller/cluster_controller_server/reconciler.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_nodes.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_actions.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_runtime.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_metrics.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_version_gate.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_minio.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_etcd_endpoints.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_lane_status.go
+      - golang/cluster_controller/cluster_controller_server/leader_election.go
+      - golang/cluster_controller/cluster_controller_server/leader_liveness.go
+      - golang/cluster_controller/cluster_controller_server/leader_proxy.go
+      - golang/cluster_controller/cluster_controller_server/leader_pending_update_etcd.go
+      - golang/cluster_controller/cluster_controller_server/desired_state.go
+      - golang/cluster_controller/cluster_controller_server/desired_state_handlers.go
+      - golang/cluster_controller/cluster_controller_server/desired_state_publisher.go
+      - golang/cluster_controller/cluster_controller_server/desired_from_resources.go
+      - golang/cluster_controller/cluster_controller_server/release_pipeline.go
+      - golang/cluster_controller/cluster_controller_server/release_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/release_resolver.go
+      - golang/cluster_controller/cluster_controller_server/release_runtime_convergence.go
+      - golang/cluster_controller/cluster_controller_server/release_phase.go
+      - golang/cluster_controller/cluster_controller_server/release_hash.go
+      - golang/cluster_controller/cluster_controller_server/release_ledger.go
+      - golang/cluster_controller/cluster_controller_server/workflow_runner.go
+      - golang/cluster_controller/cluster_controller_server/workflow_execute.go
+      - golang/cluster_controller/cluster_controller_server/workflow_release.go
+      - golang/cluster_controller/cluster_controller_server/workflow_trigger.go
+      - golang/cluster_controller/cluster_controller_server/workflow_controller_deploy.go
+      - golang/cluster_controller/cluster_controller_server/workflow_health_gate.go
+      - golang/cluster_controller/cluster_controller_server/workflow_objectstore.go
+      - golang/cluster_controller/cluster_controller_server/workflow_error_classifier.go
+      - golang/cluster_controller/cluster_controller_server/workflow_invariant.go
+      - golang/cluster_controller/cluster_controller_server/workflow_repo_sync.go
+      - golang/cluster_controller/cluster_controller_server/bootstrap.go
+      - golang/cluster_controller/cluster_controller_server/bootstrap_phases.go
+      - golang/cluster_controller/cluster_controller_server/day0_seed.go
+      - golang/cluster_controller/cluster_controller_server/handlers_cluster.go
+      - golang/cluster_controller/cluster_controller_server/handlers_health.go
+      - golang/cluster_controller/cluster_controller_server/handlers_join.go
+      - golang/cluster_controller/cluster_controller_server/handlers_node.go
+      - golang/cluster_controller/cluster_controller_server/handlers_resolve.go
+      - golang/cluster_controller/cluster_controller_server/handlers_status.go
+      - golang/cluster_controller/cluster_controller_server/handlers_upgrade.go
+      - golang/cluster_controller/cluster_controller_server/infrastructure_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/infra_probes.go
+      - golang/cluster_controller/cluster_controller_server/dns_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/dns_state.go
+      - golang/cluster_controller/cluster_controller_server/pki_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/objectstore_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/objectstore_admission.go
+      - golang/cluster_controller/cluster_controller_server/promotion_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/recovery_planner.go
+      - golang/cluster_controller/cluster_controller_server/recovery_rpc.go
+      - golang/cluster_controller/cluster_controller_server/recovery_snapshot.go
+      - golang/cluster_controller/cluster_controller_server/recovery_state_store.go
+      - golang/cluster_controller/cluster_controller_server/recovery_workflow.go
+      - golang/cluster_controller/cluster_controller_server/repair_handler.go
+      - golang/cluster_controller/cluster_controller_server/repair_node_workflow.go
+      - golang/cluster_controller/cluster_controller_server/state.go
+      - golang/cluster_controller/cluster_controller_server/actor_service.go
+      - golang/cluster_controller/cluster_controller_server/agentclient.go
+      - golang/cluster_controller/cluster_controller_server/apply_loop_detector.go
+      - golang/cluster_controller/cluster_controller_server/bounded_query.go
+      - golang/cluster_controller/cluster_controller_server/component_catalog.go
+      - golang/cluster_controller/cluster_controller_server/component_resolve.go
+      - golang/cluster_controller/cluster_controller_server/convergence_committer.go
+      - golang/cluster_controller/cluster_controller_server/critical_key_prereqs.go
+      - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+      - golang/cluster_controller/cluster_controller_server/delete_approval.go
+      - golang/cluster_controller/cluster_controller_server/deploy_control_plane.go
+      - golang/cluster_controller/cluster_controller_server/drift_action_planner.go
+      - golang/cluster_controller/cluster_controller_server/etcd_members.go
+      - golang/cluster_controller/cluster_controller_server/etcd_rejoin.go
+      - golang/cluster_controller/cluster_controller_server/ingress_spec_guard.go
+      - golang/cluster_controller/cluster_controller_server/invariant_enforcement.go
+      - golang/cluster_controller/cluster_controller_server/kind_mismatch_etcd.go
+      - golang/cluster_controller/cluster_controller_server/main.go
+      - golang/cluster_controller/cluster_controller_server/minio_pools.go
+      - golang/cluster_controller/cluster_controller_server/native_dependency_block.go
+      - golang/cluster_controller/cluster_controller_server/node_agent_endpoint_fallback.go
+      - golang/cluster_controller/cluster_controller_server/node_scope.go
+      - golang/cluster_controller/cluster_controller_server/operations.go
+      - golang/cluster_controller/cluster_controller_server/plan_signer.go
+      - golang/cluster_controller/cluster_controller_server/posture.go
+      - golang/cluster_controller/cluster_controller_server/posture_metrics.go
+      - golang/cluster_controller/cluster_controller_server/profiles_deduce.go
+      - golang/cluster_controller/cluster_controller_server/profiles_normalize.go
+      - golang/cluster_controller/cluster_controller_server/projections_init.go
+      - golang/cluster_controller/cluster_controller_server/remediation_consumer.go
+      - golang/cluster_controller/cluster_controller_server/resign_leadership.go
+      - golang/cluster_controller/cluster_controller_server/resources_wiring.go
+      - golang/cluster_controller/cluster_controller_server/scylla_members.go
+      - golang/cluster_controller/cluster_controller_server/scylla_schema_guard.go
+      - golang/cluster_controller/cluster_controller_server/service_config.go
+      - golang/cluster_controller/cluster_controller_server/service_identity.go
+      - golang/cluster_controller/cluster_controller_server/service_projection.go
+      - golang/cluster_controller/cluster_controller_server/service_release_bridge.go
+      - golang/cluster_controller/cluster_controller_server/topology_safety.go
+      - golang/cluster_controller/cluster_controller_server/unit_actions.go
+      - golang/cluster_controller/cluster_controller_server/version_helpers.go
+      - golang/cluster_controller/cluster_controller_server/workqueue.go
+      - golang/cluster_controller/cluster_controller_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads and writes all cluster state.
+      - service: repository
+        phase: package_install
+        required: true
+        reason: Resolves artifact versions for reconciliation.
+      - service: workflow-service
+        phase: reconcile
+        required: true
+        reason: Dispatches all state-changing cluster workflows.
+
+  - id: node-agent
+    name: node-agent
+    summary: Per-node executor — installs packages, controls systemd units, reports health.
+    systemd_unit: globular-node-agent.service
+    proto_service: node_agent.NodeAgentService
+    proto_file: proto/node_agent.proto
+    implementation:
+      - golang/node_agent/node_agent_server/server.go
+      - golang/node_agent/node_agent_server/heartbeat.go
+      - golang/node_agent/node_agent_server/state.go
+      - golang/node_agent/node_agent_server/installer_api.go
+      - golang/node_agent/node_agent_server/apply_package_release.go
+      - golang/node_agent/node_agent_server/installed_packages_handlers.go
+      - golang/node_agent/node_agent_server/installed_services.go
+      - golang/node_agent/node_agent_server/grpc_handlers.go
+      - golang/node_agent/node_agent_server/grpc_workflow.go
+      - golang/node_agent/node_agent_server/grpc_workflow_skip.go
+      - golang/node_agent/node_agent_server/grpc_etcd_rejoin.go
+      - golang/node_agent/node_agent_server/grpc_scylla_wipe.go
+      - golang/node_agent/node_agent_server/workflow_runner.go
+      - golang/node_agent/node_agent_server/workflow_day0.go
+      - golang/node_agent/node_agent_server/repair_actions.go
+      - golang/node_agent/node_agent_server/verify_package_integrity.go
+      - golang/node_agent/node_agent_server/process_fingerprint.go
+      - golang/node_agent/node_agent_server/bootstrap_import.go
+      - golang/node_agent/node_agent_server/certificate.go
+      - golang/node_agent/node_agent_server/minio_contract_reconcile.go
+      - golang/node_agent/node_agent_server/minio_systemd_reconcile.go
+      - golang/node_agent/node_agent_server/minio_topology_gate.go
+      - golang/node_agent/node_agent_server/network_reconcile.go
+      - golang/node_agent/node_agent_server/ingress_reconcile.go
+      - golang/node_agent/node_agent_server/xds_config_reconcile.go
+      - golang/node_agent/node_agent_server/dns_sync.go
+      - golang/node_agent/node_agent_server/infra_health_probe.go
+      - golang/node_agent/node_agent_server/hardware.go
+      - golang/node_agent/node_agent_server/disk_inventory.go
+      - golang/node_agent/node_agent_server/cleanup_disk_journal.go
+      - golang/node_agent/node_agent_server/delete_cache_artifact.go
+      - golang/node_agent/node_agent_server/event_handler.go
+      - golang/node_agent/node_agent_server/event_publisher.go
+      - golang/node_agent/node_agent_server/control_service_handler.go
+      - golang/node_agent/node_agent_server/actor_service.go
+      - golang/node_agent/node_agent_server/backup_provider.go
+      - golang/node_agent/node_agent_server/restore_provider.go
+      - golang/node_agent/node_agent_server/metrics.go
+      - golang/node_agent/node_agent_server/native_dep_check.go
+      - golang/node_agent/node_agent_server/operation_tracker.go
+      - golang/node_agent/node_agent_server/package_config_pre.go
+      - golang/node_agent/node_agent_server/package_revision_post.go
+      - golang/node_agent/node_agent_server/scylla_manager_agent_config.go
+      - golang/node_agent/node_agent_server/search_logs_handler.go
+      - golang/node_agent/node_agent_server/service_discovery.go
+      - golang/node_agent/node_agent_server/webroot_sync.go
+      - golang/node_agent/node_agent_server/main.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster config, writes node heartbeat.
+      - service: repository
+        phase: package_install
+        required: true
+        reason: Downloads artifacts for installation.
+      - service: cluster-controller
+        phase: registration
+        required: true
+        reason: Registers with controller on startup.
+
+  - id: workflow-service
+    name: workflow-service
+    summary: Workflow engine — coordinates multi-step cluster mutations with durable state.
+    systemd_unit: globular-workflow.service
+    proto_service: workflow.WorkflowService
+    proto_file: proto/workflow.proto
+    implementation:
+      - golang/workflow/workflow_server/server.go
+      - golang/workflow/workflow_server/executor.go
+      - golang/workflow/workflow_server/executor_lease.go
+      - golang/workflow/workflow_server/executor_resume.go
+      - golang/workflow/workflow_server/incidents.go
+      - golang/workflow/workflow_server/incident_projection.go
+      - golang/workflow/workflow_server/step_receipts.go
+      - golang/workflow/workflow_server/receipt_failure_classifier.go
+      - golang/workflow/workflow_server/infra_release_handler.go
+      - golang/workflow/workflow_server/import_day0.go
+      - golang/workflow/workflow_server/scylla_reconnect.go
+      - golang/workflow/workflow_server/schema.go
+      - golang/workflow/workflow_server/metrics.go
+    depends_on:
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores all workflow state durably.
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster config and service endpoints.
+
+  - id: cluster-doctor
+    name: cluster-doctor
+    summary: Health analysis — evaluates invariants, emits findings, triggers remediations.
+    systemd_unit: globular-cluster-doctor.service
+    proto_service: cluster_doctor.ClusterDoctorService
+    proto_file: proto/cluster_doctor.proto
+    implementation:
+      - golang/cluster_doctor/cluster_doctor_server/server.go
+      - golang/cluster_doctor/cluster_doctor_server/executor.go
+      - golang/cluster_doctor/cluster_doctor_server/healer_loop.go
+      - golang/cluster_doctor/cluster_doctor_server/handler_remediation.go
+      - golang/cluster_doctor/cluster_doctor_server/handler_remediation_workflow.go
+      - golang/cluster_doctor/cluster_doctor_server/leader_election.go
+      - golang/cluster_doctor/cluster_doctor_server/actor_service.go
+      - golang/cluster_doctor/cluster_doctor_server/workflow_runner.go
+      - golang/cluster_doctor/cluster_doctor_server/node_agent_dialer.go
+      - golang/cluster_doctor/cluster_doctor_server/main.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster state and service endpoints.
+      - service: cluster-controller
+        phase: snapshot
+        required: true
+        reason: Queries controller for desired/installed/runtime snapshot.
+
+  # ── Identity and access ───────────────────────────────────────────────────
+
+  - id: authentication
+    name: authentication
+    summary: JWT token issuer and validator — the identity boundary for all Globular services.
+    systemd_unit: globular-authentication.service
+    proto_service: authentication.AuthenticationService
+    proto_file: proto/authentication.proto
+    implementation:
+      - golang/authentication/authentication_server/server.go
+      - golang/authentication/authentication_server/handlers.go
+      - golang/authentication/authentication_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads signing keys and service config from etcd.
+
+  - id: rbac
+    name: rbac
+    summary: Permission enforcement — RBAC policies, role bindings, and access decisions.
+    systemd_unit: globular-rbac.service
+    proto_service: rbac.RbacService
+    proto_file: proto/rbac.proto
+    implementation:
+      - golang/rbac/rbac_server/server.go
+      - golang/rbac/rbac_server/rbac_access.go
+      - golang/rbac/rbac_server/rbac_actions.go
+      - golang/rbac/rbac_server/rbac_cleanup.go
+      - golang/rbac/rbac_server/rbac_index.go
+      - golang/rbac/rbac_server/rbac_ownership.go
+      - golang/rbac/rbac_server/rbac_paths.go
+      - golang/rbac/rbac_server/rbac_permissions.go
+      - golang/rbac/rbac_server/rbac_role_bindings.go
+      - golang/rbac/rbac_server/rbac_sharing.go
+      - golang/rbac/rbac_server/rbac_space.go
+      - golang/rbac/rbac_server/rbac_streams.go
+      - golang/rbac/rbac_server/storage_helpers.go
+      - golang/rbac/rbac_server/logutil.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads and writes RBAC policy data.
+
+  - id: resource
+    name: resource
+    summary: Resource registry — manages accounts, applications, peers, roles, and sessions.
+    systemd_unit: globular-resource.service
+    proto_service: resource.ResourceService
+    proto_file: proto/resource.proto
+    implementation:
+      - golang/resource/resource_server/server.go
+      - golang/resource/resource_server/accounts.go
+      - golang/resource/resource_server/applications.go
+      - golang/resource/resource_server/backup_hooks.go
+      - golang/resource/resource_server/calls.go
+      - golang/resource/resource_server/cors.go
+      - golang/resource/resource_server/helpers.go
+      - golang/resource/resource_server/misc.go
+      - golang/resource/resource_server/peers.go
+      - golang/resource/resource_server/references.go
+      - golang/resource/resource_server/roles.go
+      - golang/resource/resource_server/security.go
+      - golang/resource/resource_server/sessions.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster config and service endpoints.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens on all resource RPCs.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control for resource operations.
+
+  # ── Networking and discovery ──────────────────────────────────────────────
+
+  - id: dns
+    name: dns
+    summary: Authoritative DNS for the internal cluster domain (globular.internal).
+    systemd_unit: globular-dns.service
+    proto_service: dns.DnsService
+    proto_file: proto/dns.proto
+    implementation:
+      - golang/dns/dns_server/server.go
+      - golang/dns/dns_server/handlers.go
+      - golang/dns/dns_server/backup_hooks.go
+      - golang/dns/dns_server/config.go
+    depends_on:
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Persists DNS zone records.
+
+  # discovery: RETIRED — service registry/endpoint resolution moved to etcd
+  # (/globular/services/{id}/config); package version queries go through the
+  # repository service directly. Removed in commit deleting golang/discovery/.
+
+  # ── Package registry ──────────────────────────────────────────────────────
+
+  - id: repository
+    name: repository
+    summary: Package registry — stores artifacts in ScyllaDB/MinIO, enforces publish lifecycle, signs and verifies blobs.
+    systemd_unit: globular-repository.service
+    proto_service: repository.PackageRepository
+    proto_file: proto/repository.proto
+    implementation:
+      - golang/repository/repository_server/server.go
+      - golang/repository/repository_server/handlers.go
+      - golang/repository/repository_server/artifact_handlers.go
+      - golang/repository/repository_server/artifact_state.go
+      - golang/repository/repository_server/artifact_state_backfill.go
+      - golang/repository/repository_server/artifact_admin.go
+      - golang/repository/repository_server/artifact_law_validator.go
+      - golang/repository/repository_server/artifact_verify_rpc.go
+      - golang/repository/repository_server/allocate_upload.go
+      - golang/repository/repository_server/publish_reconciler.go
+      - golang/repository/repository_server/publish_workflow.go
+      - golang/repository/repository_server/release_index.go
+      - golang/repository/repository_server/release_ledger.go
+      - golang/repository/repository_server/rollback.go
+      - golang/repository/repository_server/rollback_rpc.go
+      - golang/repository/repository_server/signing.go
+      - golang/repository/repository_server/signing_rpc.go
+      - golang/repository/repository_server/signature_policy.go
+      - golang/repository/repository_server/trusted_publisher.go
+      - golang/repository/repository_server/blob_integrity.go
+      - golang/repository/repository_server/bundle_catalog.go
+      - golang/repository/repository_server/describe_package.go
+      - golang/repository/repository_server/gc.go
+      - golang/repository/repository_server/import_provisional.go
+      - golang/repository/repository_server/install_policy.go
+      - golang/repository/repository_server/manifest_cache.go
+      - golang/repository/repository_server/migration.go
+      - golang/repository/repository_server/namespace.go
+      - golang/repository/repository_server/objectstore_admission.go
+      - golang/repository/repository_server/provenance.go
+      - golang/repository/repository_server/reachability.go
+      - golang/repository/repository_server/reachability_guard.go
+      - golang/repository/repository_server/repository_findings.go
+      - golang/repository/repository_server/repository_reconciler.go
+      - golang/repository/repository_server/repository_source.go
+      - golang/repository/repository_server/repository_source_policy.go
+      - golang/repository/repository_server/repository_source_resolver.go
+      - golang/repository/repository_server/repository_source_upstream.go
+      - golang/repository/repository_server/resolver.go
+      - golang/repository/repository_server/scylla_store.go
+      - golang/repository/repository_server/storage_topology.go
+      - golang/repository/repository_server/sync_from_upstream.go
+      - golang/repository/repository_server/audit.go
+      - golang/repository/repository_server/config.go
+      - golang/repository/repository_server/config_ownership.go
+      - golang/repository/repository_server/config_receipts.go
+      - golang/repository/repository_server/dep_health.go
+    depends_on:
+      - service: scylladb
+        phase: metadata_read
+        required: true
+        reason: Stores artifact metadata and publish state.
+      - service: minio
+        phase: blob_read
+        required: true
+        reason: Stores and retrieves artifact blobs.
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster config and coordinates leader election.
+
+  # ── Event bus ─────────────────────────────────────────────────────────────
+
+  - id: event
+    name: event
+    summary: Event bus — publish/subscribe for cluster events, backed by ScyllaDB.
+    systemd_unit: globular-event.service
+    proto_service: event.EventService
+    proto_file: proto/event.proto
+    implementation:
+      - golang/event/event_server/server.go
+      - golang/event/event_server/handlers.go
+      - golang/event/event_server/scylla_bus.go
+      - golang/event/event_server/config.go
+    depends_on:
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Persists events and subscriptions in ScyllaDB.
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+
+  # ── Monitoring ────────────────────────────────────────────────────────────
+
+  - id: monitoring
+    name: monitoring
+    summary: Monitoring service — collects and exposes cluster metrics.
+    systemd_unit: globular-monitoring.service
+    proto_service: monitoring.MonitoringService
+    proto_file: proto/monitoring.proto
+    implementation:
+      - golang/monitoring/monitoring_server/server.go
+      - golang/monitoring/monitoring_server/monitoring.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster config and service endpoints.
+
+  - id: log
+    name: log
+    summary: Log service — stores and serves service log entries.
+    systemd_unit: globular-log.service
+    proto_service: log.LogService
+    proto_file: proto/log.proto
+    implementation:
+      - golang/log/log_server/server.go
+      - golang/log/log_server/handlers.go
+      - golang/log/log_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: scylladb
+        phase: startup
+        required: false
+        reason: Optionally persists log entries.
+
+  # ── AI services ───────────────────────────────────────────────────────────
+
+  - id: ai-memory
+    name: ai-memory
+    summary: Persistent AI knowledge store — scar tissue for incidents, decisions, and learning.
+    systemd_unit: globular-ai-memory.service
+    proto_service: ai_memory.AiMemoryService
+    proto_file: proto/ai_memory.proto
+    implementation:
+      - golang/ai_memory/ai_memory_server/server.go
+      - golang/ai_memory/ai_memory_server/migration_coordinator.go
+      - golang/ai_memory/ai_memory_server/schema.go
+    depends_on:
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores all AI knowledge entries in ScyllaDB.
+
+  - id: ai-executor
+    name: ai-executor
+    summary: Diagnosis and remediation coordinator — runs AI-driven triage and proposes fixes.
+    systemd_unit: globular-ai-executor.service
+    proto_service: ai_executor.AiExecutorService
+    proto_file: proto/ai_executor.proto
+    implementation:
+      - golang/ai_executor/ai_executor_server/server.go
+      - golang/ai_executor/ai_executor_server/handlers.go
+      - golang/ai_executor/ai_executor_server/handlers_conversation.go
+      - golang/ai_executor/ai_executor_server/handlers_peer.go
+      - golang/ai_executor/ai_executor_server/diagnoser.go
+      - golang/ai_executor/ai_executor_server/remediator.go
+      - golang/ai_executor/ai_executor_server/claude.go
+      - golang/ai_executor/ai_executor_server/anthropic_client.go
+      - golang/ai_executor/ai_executor_server/action_backend.go
+      - golang/ai_executor/ai_executor_server/conversation_store.go
+      - golang/ai_executor/ai_executor_server/job_store.go
+      - golang/ai_executor/ai_executor_server/notifier.go
+      - golang/ai_executor/ai_executor_server/peers.go
+    depends_on:
+      - service: ai-memory
+        phase: startup
+        required: false
+        reason: Reads prior incident knowledge to inform diagnosis.
+      - service: workflow-service
+        phase: remediation
+        required: true
+        reason: Dispatches approved remediation workflows.
+
+  - id: ai-watcher
+    name: ai-watcher
+    summary: Event monitor — watches cluster events and triggers AI diagnosis on anomalies.
+    systemd_unit: globular-ai-watcher.service
+    proto_service: ai_watcher.AiWatcherService
+    proto_file: proto/ai_watcher.proto
+    implementation:
+      - golang/ai_watcher/ai_watcher_server/server.go
+      - golang/ai_watcher/ai_watcher_server/default_rules.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Watches etcd for cluster state changes.
+      - service: ai-executor
+        phase: diagnosis
+        required: false
+        reason: Forwards anomalies to ai-executor for diagnosis.
+
+  - id: ai-router
+    name: ai-router
+    summary: Dynamic AI routing — scores and routes AI requests based on load, latency, and capability.
+    systemd_unit: globular-ai-router.service
+    proto_service: ai_router.AiRouterService
+    proto_file: proto/ai_router.proto
+    implementation:
+      - golang/ai_router/ai_router_server/server.go
+      - golang/ai_router/ai_router_server/handlers.go
+      - golang/ai_router/ai_router_server/engine.go
+      - golang/ai_router/ai_router_server/scorer.go
+      - golang/ai_router/ai_router_server/anomaly.go
+      - golang/ai_router/ai_router_server/collector.go
+      - golang/ai_router/ai_router_server/context.go
+      - golang/ai_router/ai_router_server/drain.go
+      - golang/ai_router/ai_router_server/learning.go
+      - golang/ai_router/ai_router_server/safety.go
+      - golang/ai_router/ai_router_server/stability.go
+      - golang/ai_router/ai_router_server/default_config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config and route registry.
+      - service: ai-executor
+        phase: routing
+        required: false
+        reason: Routes AI execution requests to executor peers.
+      - service: ai-memory
+        phase: routing
+        required: false
+        reason: Reads routing history and capability profiles.
+
+  # ── File and storage ──────────────────────────────────────────────────────
+
+  - id: file-service
+    name: file-service
+    summary: File and object-storage service — manages user files, public directories, indexing, metadata, thumbnails, and web content. Stores blobs in MinIO, metadata in ScyllaDB.
+    systemd_unit: globular-file.service
+    proto_service: file.FileService
+    proto_file: proto/file.proto
+    implementation:
+      - golang/file/file_server/server.go
+      - golang/file/file_server/file_ops.go
+      - golang/file/file_server/dir_ops.go
+      - golang/file/file_server/storage_helpers.go
+      - golang/file/file_server/public_proxy.go
+      - golang/file/file_server/indexing_rpc.go
+      - golang/file/file_server/path_util.go
+      - golang/file/file_server/thumbnails.go
+      - golang/file/file_server/metadata.go
+    depends_on:
+      - service: etcd
+        phase: bootstrap
+        required: true
+        reason: Reads service config and publishes instance record.
+      - service: scylladb
+        phase: day0
+        required: true
+        reason: Persists file metadata.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Authenticates all file operations.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces RBAC for upload, download, deletion.
+      - service: minio
+        phase: day1
+        required: true
+        reason: Stores file blobs.
+      - service: event
+        phase: day1
+        required: false
+        reason: Emits file.uploaded / file.deleted events.
+      - service: resource
+        phase: day1
+        required: false
+        reason: Resource registry for file paths and access control.
+    authority:
+      owns:
+        - user_file_paths
+        - public_file_paths
+        - file_metadata
+        - file_indexing_events
+      must_not_own:
+        - global_cluster_identity
+        - root_certificate_authority
+    security:
+      tls_required: true
+      authz_required: true
+      streaming_rpcs_require_path_before_write: true
+
+  - id: storage
+    name: storage
+    summary: Object storage service — general-purpose blob read/write interface over MinIO.
+    systemd_unit: globular-storage.service
+    proto_service: storage.StorageService
+    proto_file: proto/storage.proto
+    implementation:
+      - golang/storage/storage_server/server.go
+      - golang/storage/storage_server/handlers.go
+      - golang/storage/storage_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: minio
+        phase: startup
+        required: true
+        reason: Stores and retrieves all blobs.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens on storage operations.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces storage access control.
+
+  - id: persistence
+    name: persistence
+    summary: Persistence service — key-value and collection storage backed by ScyllaDB.
+    systemd_unit: globular-persistence.service
+    proto_service: persistence.PersistenceService
+    proto_file: proto/persistence.proto
+    implementation:
+      - golang/persistence/persistence_server/server.go
+      - golang/persistence/persistence_server/persistence.go
+    depends_on:
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: ScyllaDB is the backing store for all persisted data.
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control.
+
+  # ── Compute ───────────────────────────────────────────────────────────────
+
+  - id: compute
+    name: compute
+    summary: Batch compute service — partitions, places, and runs distributed compute jobs.
+    systemd_unit: globular-compute.service
+    proto_service: compute.ComputeService
+    proto_file: proto/compute.proto
+    implementation:
+      - golang/compute/compute_server/server.go
+      - golang/compute/compute_server/handlers.go
+      - golang/compute/compute_server/runner.go
+      - golang/compute/compute_server/actor_service.go
+      - golang/compute/compute_server/state.go
+      - golang/compute/compute_server/placement.go
+      - golang/compute/compute_server/partition_planner.go
+      - golang/compute/compute_server/remote_runner.go
+      - golang/compute/compute_server/retry_policy.go
+      - golang/compute/compute_server/verifier.go
+      - golang/compute/compute_server/minio_staging.go
+      - golang/compute/compute_server/workflow_actions.go
+      - golang/compute/compute_server/workflow_dispatch.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster config and job routing.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores job state and results.
+      - service: minio
+        phase: staging
+        required: true
+        reason: Stages input/output data for jobs.
+      - service: workflow-service
+        phase: job_dispatch
+        required: true
+        reason: Dispatches compute workflows.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens on compute RPCs.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control for job submission.
+
+  # ── Media and content ─────────────────────────────────────────────────────
+
+  - id: media
+    name: media
+    summary: Media service — transcoding, thumbnail generation, IMDB enrichment, and media catalog.
+    systemd_unit: globular-media.service
+    proto_service: media.MediaService
+    proto_file: proto/media.proto
+    implementation:
+      - golang/media/media_server/server.go
+      - golang/media/media_server/media.go
+      - golang/media/media_server/channel.go
+      - golang/media/media_server/conversions.go
+      - golang/media/media_server/ffmpeg.go
+      - golang/media/media_server/helper.go
+      - golang/media/media_server/http_client.go
+      - golang/media/media_server/imdb.go
+      - golang/media/media_server/logging.go
+      - golang/media/media_server/scrapper.go
+      - golang/media/media_server/storage_helpers.go
+      - golang/media/media_server/thumbnail_helpers.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores media metadata and catalog entries.
+      - service: minio
+        phase: startup
+        required: true
+        reason: Stores media blobs and transcoded output.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control for media operations.
+      - service: file-service
+        phase: day1
+        required: false
+        reason: Reads source files for transcoding.
+
+  - id: title
+    name: title
+    summary: Title catalog service — manages movie/show metadata, indexes, cast, watching status, and IMDB enrichment.
+    systemd_unit: globular-title.service
+    proto_service: title.TitleService
+    proto_file: proto/title.proto
+    implementation:
+      - golang/title/title_server/server.go
+      - golang/title/title_server/title.go
+      - golang/title/title_server/audio.go
+      - golang/title/title_server/backup_hooks.go
+      - golang/title/title_server/casting.go
+      - golang/title/title_server/file_association.go
+      - golang/title/title_server/helper.go
+      - golang/title/title_server/imdb_enrich.go
+      - golang/title/title_server/index_helpers.go
+      - golang/title/title_server/internal_helpers.go
+      - golang/title/title_server/metadata_cache.go
+      - golang/title/title_server/rebuild.go
+      - golang/title/title_server/watching.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores title catalog and metadata.
+      - service: minio
+        phase: startup
+        required: false
+        reason: Stores cover art and assets.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control.
+      - service: file-service
+        phase: day1
+        required: false
+        reason: Associates titles with file paths.
+
+  - id: blog
+    name: blog
+    summary: Blog service — manages blog posts, comments, and media attachments.
+    systemd_unit: globular-blog.service
+    proto_service: blog.BlogService
+    proto_file: proto/blog.proto
+    implementation:
+      - golang/blog/blog_server/server.go
+      - golang/blog/blog_server/handlers.go
+      - golang/blog/blog_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores blog posts and comments.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control.
+
+  - id: catalog
+    name: catalog
+    summary: Catalog service — application and service catalog with metadata and versioning.
+    systemd_unit: globular-catalog.service
+    proto_service: catalog.CatalogService
+    proto_file: proto/catalog.proto
+    implementation:
+      - golang/catalog/catalog_server/server.go
+      - golang/catalog/catalog_server/handlers.go
+      - golang/catalog/catalog_server/backup_hooks.go
+      - golang/catalog/catalog_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores catalog entries and metadata.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces catalog access control.
+      - service: resource
+        phase: day1
+        required: false
+        reason: Links catalog entries to resource registry.
+
+  # ── Communication ─────────────────────────────────────────────────────────
+
+  - id: conversation
+    name: conversation
+    summary: Conversation service — manages multi-party conversations and message history.
+    systemd_unit: globular-conversation.service
+    proto_service: conversation.ConversationService
+    proto_file: proto/conversation.proto
+    implementation:
+      - golang/conversation/conversation_server/server.go
+      - golang/conversation/conversation_server/conversation.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores conversation history.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces conversation access control.
+
+  - id: mail
+    name: mail
+    summary: Mail service — sends and receives email via SMTP/IMAP.
+    systemd_unit: globular-mail.service
+    proto_service: mail.MailService
+    proto_file: proto/mail.proto
+    implementation:
+      - golang/mail/mail_server/server.go
+      - golang/mail/mail_server/handlers.go
+      - golang/mail/mail_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads SMTP/IMAP config.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control for mail operations.
+
+  - id: ldap
+    name: ldap
+    summary: LDAP service — authenticates and queries external LDAP/Active Directory directories.
+    systemd_unit: globular-ldap.service
+    proto_service: ldap.LdapService
+    proto_file: proto/ldap.proto
+    implementation:
+      - golang/ldap/ldap_server/server.go
+      - golang/ldap/ldap_server/handlers.go
+      - golang/ldap/ldap_server/ldap_facade.go
+      - golang/ldap/ldap_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads LDAP connection config.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Bridges LDAP identities to cluster tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces access control.
+
+  # ── Data services ─────────────────────────────────────────────────────────
+
+  - id: sql
+    name: sql
+    summary: SQL service — executes queries against relational databases via gRPC.
+    systemd_unit: globular-sql.service
+    proto_service: sql.SqlService
+    proto_file: proto/sql.proto
+    implementation:
+      - golang/sql/sql_server/server.go
+      - golang/sql/sql_server/handlers.go
+      - golang/sql/sql_server/sql.go
+      - golang/sql/sql_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads database connection config.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens on all SQL queries.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces table/query access control.
+
+  - id: search
+    name: search
+    summary: Search service — full-text search indexing and query over cluster content.
+    systemd_unit: globular-search.service
+    proto_service: search.SearchService
+    proto_file: proto/search.proto
+    implementation:
+      - golang/search/search_server/server.go
+      - golang/search/search_server/handlers.go
+      - golang/search/search_server/backup_hooks.go
+      - golang/search/search_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config and index locations.
+      - service: scylladb
+        phase: startup
+        required: true
+        reason: Stores search indexes and document metadata.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces search result access control.
+
+  # ── Backup and recovery ───────────────────────────────────────────────────
+
+  - id: backup-manager
+    name: backup-manager
+    summary: Backup manager — orchestrates cluster backup, replication, retention, and recovery.
+    systemd_unit: globular-backup-manager.service
+    proto_service: backup_manager.BackupManagerService
+    proto_file: proto/backup_manager.proto
+    implementation:
+      - golang/backup_manager/backup_manager_server/server.go
+      - golang/backup_manager/backup_manager_server/handlers.go
+      - golang/backup_manager/backup_manager_server/scheduler.go
+      - golang/backup_manager/backup_manager_server/capsule.go
+      - golang/backup_manager/backup_manager_server/recovery_capsule.go
+      - golang/backup_manager/backup_manager_server/recovery_seed.go
+      - golang/backup_manager/backup_manager_server/restore.go
+      - golang/backup_manager/backup_manager_server/replicate.go
+      - golang/backup_manager/backup_manager_server/retention.go
+      - golang/backup_manager/backup_manager_server/cluster.go
+      - golang/backup_manager/backup_manager_server/hooks.go
+      - golang/backup_manager/backup_manager_server/jobstore.go
+      - golang/backup_manager/backup_manager_server/lock.go
+      - golang/backup_manager/backup_manager_server/metrics.go
+      - golang/backup_manager/backup_manager_server/minio_mgmt.go
+      - golang/backup_manager/backup_manager_server/node_tasks.go
+      - golang/backup_manager/backup_manager_server/preflight.go
+      - golang/backup_manager/backup_manager_server/providers.go
+      - golang/backup_manager/backup_manager_server/scope.go
+      - golang/backup_manager/backup_manager_server/topology.go
+      - golang/backup_manager/backup_manager_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads cluster topology for backup scoping.
+      - service: scylladb
+        phase: backup_data
+        required: true
+        reason: Snapshots ScyllaDB data.
+      - service: minio
+        phase: backup_blobs
+        required: true
+        reason: Archives artifact blobs to backup storage.
+      - service: node-agent
+        phase: backup_coordination
+        required: true
+        reason: Coordinates per-node backup tasks.
+      - service: workflow-service
+        phase: backup_workflow
+        required: false
+        reason: Dispatches long-running backup workflows.
+
+  - id: backup-hook
+    name: backup-hook
+    summary: Backup hook handler — invoked by services to participate in backup/restore lifecycle.
+    proto_service: backup_hook.BackupHookService
+    proto_file: proto/backup_hook.proto
+    implementation:
+      - golang/backup_hook/handler.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.
+
+  # ── Torrenting ────────────────────────────────────────────────────────────
+
+  - id: torrent
+    name: torrent
+    summary: Torrent service — manages BitTorrent downloads and seeding.
+    systemd_unit: globular-torrent.service
+    proto_service: torrent.TorrentService
+    proto_file: proto/torrent.proto
+    implementation:
+      - golang/torrent/torrent_server/server.go
+      - golang/torrent/torrent_server/handlers.go
+      - golang/torrent/torrent_server/torrent.go
+      - golang/torrent/torrent_server/storage_helpers.go
+      - golang/torrent/torrent_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config and storage paths.
+      - service: minio
+        phase: startup
+        required: false
+        reason: Stores completed downloads.
+      - service: authentication
+        phase: day1
+        required: true
+        reason: Validates tokens.
+      - service: rbac
+        phase: day1
+        required: true
+        reason: Enforces download access control.
+
+  # ── Developer tools ───────────────────────────────────────────────────────
+
+  - id: echo
+    name: echo
+    summary: Echo service — reference implementation and test harness service.
+    systemd_unit: globular-echo.service
+    proto_service: echo.EchoService
+    proto_file: proto/echo.proto
+    implementation:
+      - golang/echo/echo_server/server.go
+      - golang/echo/echo_server/handlers.go
+      - golang/echo/echo_server/main.go
+      - golang/echo/echo_server/config.go
+    depends_on:
+      - service: etcd
+        phase: startup
+        required: true
+        reason: Reads service config.

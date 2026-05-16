@@ -1,0 +1,100 @@
+incident_id: INC-2026-0003
+title: "Day-1 nuc bootstrap: five compounding convergence gaps blocked workload_ready"
+status: RESOLVED
+severity: HIGH
+time_range:
+  from: "2026-05-06T22:30:00Z"
+  to: "2026-05-07T03:15:00Z"
+
+symptoms:
+  - "globule-nuc stuck at bootstrap_phase=envoy_ready despite envoy being active"
+  - "gateway: version unresolved (not installed on any node) — InfrastructureRelease stuck in FAILED"
+  - "sync_installed_state workflow step failing with 'authoritative writes are controller-only'"
+  - "cluster-controller self-upgrade restart loop every ~25s (convergenceCommitter never fired before next restart)"
+  - "mcp repeated remediation loop: reconcile-workflow dispatching missing_package every 30s"
+  - "mcp start failed: port 10260 already in use (orphaned mcp_server from old version)"
+  - "minio inactive on nuc: topology gate rejected start — node not in ObjectStoreDesiredState"
+  - "MinIO topology SKIP_NO_QUORUM: storage_nodes_below_quorum:2 (need 3, only have ryzen+nuc)"
+
+observed_services:
+  - cluster-controller
+  - mcp
+  - minio
+  - gateway
+  - node-agent
+
+root_cause: |
+  Five compounding bugs, each blocking the next:
+
+  1. GATEWAY VERSION UNRESOLVED: gateway had no installed record in etcd (Day-0 installed, no
+     ConvergenceResultV1 written, syncInstalledStateToEtcd stubbed). resolveInfraVersion returned "".
+     The InfrastructureRelease was created with version "1.0.0" from a manually-seeded etcd record,
+     but the repo only had "1.2.13". Fix: update installed record on ryzen to "1.2.13" and update
+     the InfrastructureRelease spec.version to "1.2.13".
+
+  2. SYNC_INSTALLED_STATE FAILURE: workflow_release.go SyncInstalledPackage was calling node-agent
+     SetInstalledPackage RPC → WriteInstalledPackage → hard-fail shim ("authoritative writes are
+     controller-only"). Fix already applied (previous session): changed to CommitInstalledPackage directly.
+
+  3. CONTROLLER SELF-UPGRADE RESTART LOOP: convergenceCommitter started at T+35s (20s delay + 15s
+     first tick). Controller restarted itself at T+25s after each cluster-controller install. The
+     committer never fired before the next restart, so no installed record was committed for
+     cluster-controller, so the reconciler kept re-dispatching install. Fix already applied (previous
+     session): immediate runOnce on Start() + reduced startup delay to 5s.
+
+  4. MCP ORPHANED PROCESS (INC-2026-0002 RECURRENCE): Old mcp_server process (from May 5) escaped
+     the systemd cgroup and continued holding port 10260. When mcp@1.2.15 was installed on nuc
+     during the install wave, the start_services step was absent from the spec (intentional Day-0
+     skip), so the service was not started. On manual start attempt, port 10260 was blocked by the
+     orphan. Fix: sudo killall -9 mcp_server on nuc, then start via node-agent ControlService.
+     Long-term fix: added ExecStartPre=+/bin/sh -c 'pkill -9 -x mcp_server || true' to unit file
+     in both spec and systemd/ directory. Added start_services + health_checks steps to mcp spec.
+     (Original recommendation used -f; corrected to -x on 2026-05-09 after workflow_1.2.24 hit the
+     self-SIGKILL trap — `pkill -f` matches the parent shell's argv which contains the binary
+     name as its pkill argument, killing itself.)
+
+  5. MINIO TOPOLOGY GATE: nuc's node-agent blocks globular-minio.service start if the node IP is
+     not in ObjectStoreDesiredState.Nodes. The objectstore is standalone (ryzen only). The topology
+     workflow (objectstore.minio.apply_topology_generation) returns SKIP_NO_QUORUM because only 2
+     storage nodes are present (ryzen + nuc). Needs 3 for distributed MinIO (erasure coding).
+     Fix requires: globule-dell (10.0.0.20) must join the cluster as the 3rd storage node.
+
+state_deltas:
+  - "Before: bootstrap_phase=envoy_ready (stuck)"
+  - "After gateway fix: bootstrap_phase=envoy_ready → storage_joining → workload_ready"
+  - "After mcp fix: version:mcp=1.2.15 health check passes, mcp active on nuc"
+  - "After controller/minio etcd patches: mcp, sidekick, cluster-controller installed records in etcd"
+  - "Remaining: minio inactive (topology gate), sidekick blocked on minio, dell not yet joined"
+
+fix_applied:
+  - description: "Updated gateway InfrastructureRelease spec.version from 1.0.0 to 1.2.13 (published version)"
+    via: etcd_put
+  - description: "Updated ryzen gateway installed record from 1.0.0 to 1.2.13"
+    via: etcd_put
+  - description: "Committed mcp and sidekick installed records to etcd (interrupted during controller restart storm)"
+    via: etcd_put
+  - description: "Killed orphaned mcp_server on nuc, started mcp via node-agent ControlService"
+    via: ssh + grpc_call
+  - description: "Added ExecStartPre orphan-kill guard to globular-mcp.service unit file"
+    files:
+      - packages/metadata/mcp/systemd/globular-mcp.service
+      - packages/metadata/mcp/specs/mcp_service.yaml
+  - description: "Added start_services and health_checks steps to mcp_service.yaml (Day-1 install was not starting mcp)"
+    files:
+      - packages/metadata/mcp/specs/mcp_service.yaml
+
+remaining_risk: |
+  1. MinIO on nuc stays inactive until dell joins and topology goes from standalone → distributed.
+     Sidekick, and any services that write to MinIO, will be degraded on nuc until then.
+  2. mcp spec still has no WorkingDirectory in the inline unit (systemd/ file has it, spec doesn't).
+     Low risk since mcp doesn't use CWD.
+  3. scylla-manager and scylla-manager-agent not installed on nuc (no release dispatched yet).
+  4. The etcd-patched installed records (mcp, sidekick) will be overwritten correctly by the
+     convergenceCommitter when the next install workflow completes.
+
+invariants_touched:
+  - install.result.atomic_commit
+  - convergence.no_infinite_retry
+  - bootstrap.infra_before_workload
+  - objectstore.topology_gate
+  - founding_quorum.three_storage_nodes

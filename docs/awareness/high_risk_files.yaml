@@ -1,0 +1,13 @@
+files:
+  - golang/cluster_controller/cluster_controller_server/reconcile_runtime.go
+  - golang/cluster_controller/cluster_controller_server/reconcile_dispatch.go
+  - golang/cluster_controller/cluster_controller_server/convergence_committer.go
+  - golang/cluster_controller/cluster_controller_server/desired_state_handlers.go
+  - golang/node_agent/node_agent_server/installed_services.go
+  - golang/node_agent/node_agent_server/heartbeat.go
+  - golang/node_agent/node_agent_server/apply_package_release.go
+  - golang/node_agent/node_agent_server/internal/supervisor/
+  - golang/repository/repository_server/metadata_store.go
+  - golang/node_agent/node_agent_server/server_objectstore.go
+  - golang/xds/xds_server/applied_generation.go
+  - golang/envoy/envoy_server/applied_generation.go

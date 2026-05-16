@@ -1,0 +1,1812 @@
+forbidden_fixes:
+- id: blind_reconcile_retry
+  summary: 'Retry the same install action on every reconcile tick without classifying whether the failure is transient or
+    deterministic.
+
+    '
+  related_invariants:
+  - convergence.no_infinite_retry
+  safe_alternative: 'Classify the failure using FailureClass before retrying. Transient failures get capped retries with exponential
+    backoff. Deterministic failures (wrong config, version mismatch, disk full) create an incident and halt.
+
+    '
+- id: treating_all_failures_as_transient
+  summary: 'Mark every failure as transient and schedule a retry regardless of whether the root cause can resolve itself without
+    input change.
+
+    '
+  related_invariants:
+  - convergence.no_infinite_retry
+  safe_alternative: 'Classify failure root cause before retrying. Deterministic causes (config error, version mismatch, disk
+    full) must not be retried. Only retry typed transient failures with a cap on retry count.
+
+    '
+- id: clearing_action_without_durable_result
+  summary: 'Delete or clear an action record before the installed-state and result promotion are committed to etcd in a single
+    transaction.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+  - convergence.no_infinite_retry
+  safe_alternative: 'Commit installed-state and action deletion atomically in a single etcd Txn. If the transaction fails,
+    leave the action in place and retry on the next tick; the reconciler detects the already-installed state.
+
+    '
+- id: marking_available_from_local_success_only
+  summary: 'Mark a service release AVAILABLE based solely on a local node reporting success, without the controller confirming
+    installed-state in etcd.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+  - runtime.installed_state_not_liveness
+  safe_alternative: 'Mark a release AVAILABLE only after the controller reads the installed-state record from etcd and validates
+    it matches the expected build_id. Local node reports are a prerequisite, not the final authority.
+
+    '
+- id: start_minio_from_local_health_check
+  summary: 'Start the globular-minio.service based on local health checks or disk state, without verifying that the node is
+    present in ObjectStoreDesiredState.
+
+    '
+  related_invariants:
+  - objectstore.topology_contract
+  safe_alternative: 'Read /globular/objectstore/config from etcd; start MinIO only if the node''s address appears in the ObjectStoreDesiredState
+    members list.
+
+    '
+- id: infer_minio_membership_from_disk
+  summary: 'Infer that a node should run MinIO because its data directory exists or because MinIO was previously running,
+    rather than reading the authoritative ObjectStoreDesiredState from etcd.
+
+    '
+  related_invariants:
+  - objectstore.topology_contract
+  safe_alternative: 'Read ObjectStoreDesiredState from etcd at every startup. If the key is absent, hold last-known-good topology
+    and emit a critical alert; never infer membership from local disk presence.
+
+    '
+- id: wipe_minio_sys_without_approved_transition
+  summary: 'Wipe the MinIO .minio.sys directory or reset erasure-coded pool metadata without going through an approved cluster
+    transition workflow.
+
+    '
+  related_invariants:
+  - objectstore.topology_contract
+  safe_alternative: 'Only wipe .minio.sys through a controller-approved workflow transition with an explicit generation-matched
+    approval marker; verify quorum viability before proceeding.
+
+    '
+- id: round_robin_dns_for_minio_writes
+  summary: 'Route MinIO write operations through round-robin DNS without ensuring the target node is in the active objectstore
+    pool.
+
+    '
+  related_invariants:
+  - objectstore.topology_contract
+  safe_alternative: 'Route MinIO writes only to members listed in ObjectStoreDesiredState; verify member presence before each
+    write.
+
+    '
+- id: gate_metadata_reads_on_minio_health
+  summary: 'Refuse to serve artifact listing, manifest queries, or version resolution when MinIO is unavailable, even though
+    these operations can be satisfied from ScyllaDB alone.
+
+    '
+  related_invariants:
+  - repository.metadata_first
+  safe_alternative: 'Serve all artifact metadata (listings, versions, manifests) from ScyllaDB; MinIO health only affects
+    blob download availability.
+
+    '
+- id: store_artifact_index_only_in_minio
+  summary: 'Store the artifact index, manifest, or version ledger exclusively in MinIO, making metadata unavailable when blob
+    storage degrades.
+
+    '
+  related_invariants:
+  - repository.metadata_first
+  safe_alternative: 'Write all artifact metadata to ScyllaDB as the primary index; MinIO stores blobs only. Use ScyllaDB for
+    all metadata queries regardless of MinIO health.
+
+    '
+- id: assume_installed_means_running
+  summary: 'Treat the presence of an installed-state record in etcd as proof that the corresponding service is currently running
+    and healthy.
+
+    '
+  related_invariants:
+  - runtime.installed_state_not_liveness
+  safe_alternative: 'After confirming installed-state in etcd, check systemd unit status via node-agent inventory; treat both
+    as required for a healthy service declaration.
+
+    '
+- id: skip_systemd_health_check_if_installed
+  summary: 'Skip the systemd unit liveness check because the installed-state record exists, leading to false-positive health
+    reports.
+
+    '
+  related_invariants:
+  - runtime.installed_state_not_liveness
+  safe_alternative: 'Always query systemd unit state from node-agent inventory, independent of whether an installed-state
+    record exists.
+
+    '
+- id: overwrite_desired_build_id_silently
+  summary: 'Silently overwrite a desired build_id in etcd after it has already been resolved and written, breaking audit trails
+    and potentially installing an unverified artifact.
+
+    '
+  related_invariants:
+  - desired.build_id_immutable
+  safe_alternative: 'Use etcd compare-and-swap (Txn with mod-revision check) to write build_id; reject writes that would overwrite
+    an existing non-empty build_id.
+
+    '
+- id: resolve_build_id_at_install_time
+  summary: 'Allow node-agent to resolve the build_id at install time rather than using the pre-resolved build_id from DesiredService
+    in etcd.
+
+    '
+  related_invariants:
+  - desired.build_id_immutable
+  safe_alternative: 'Resolve build_id in the controller at plan time; embed the resolved ID in DesiredService in etcd; node-agent
+    uses the pre-resolved ID only, never resolves its own.
+
+    '
+- id: derive_build_id_from_bundle_filename
+  summary: 'Derive awareness bundle build_id from the tarball filename token (short/hash-like suffix) and pass it to install
+    verification as if it were the authoritative UUID build_id.
+
+    '
+  related_invariants:
+  - awareness.auto_install_requires_verification
+  - desired.build_id_immutable
+  safe_alternative: 'Treat manifest.build_id (UUID) and release-index.build_id as the only authoritative identities. Never pass
+    filename-derived tokens as --build-id. If manifest build_id is unavailable, fail closed or install without overriding expected
+    build_id.
+
+    '
+- id: dispatch_workflow_when_scylla_down
+  summary: 'Dispatch a workflow when the Scylla backend is known to be unavailable or degraded, producing orphaned workflow
+    records.
+
+    '
+  related_invariants:
+  - workflow.backend_health_gate
+  safe_alternative: 'Run a Scylla health preflight check before dispatching any workflow; fail fast with a typed error that
+    avoids creating an orphaned record.
+
+    '
+- id: ignore_backend_health_on_dispatch
+  summary: 'Skip the backend health preflight check when dispatching workflows, relying on Scylla to surface errors during
+    the write rather than failing fast before creating the record.
+
+    '
+  related_invariants:
+  - workflow.backend_health_gate
+  safe_alternative: 'Check Scylla health and quorum state before dispatching; if health check fails, return a retriable error
+    to the caller without creating a workflow record.
+
+    '
+- id: validate_globular_annotations_inside_test_fixtures
+  summary: 'The annotation validator must not treat //globular: strings inside _test.go fixtures or raw test strings as production
+    annotations.
+
+    '
+  related_invariants:
+  - awareness.annotation_scanner.production_source_only
+  safe_alternative: 'Skip all _test.go files in the annotation scanner; in non-test files, exclude annotations inside raw
+    string literals identified via AST traversal.
+
+    '
+- id: treat_raw_string_fixture_annotations_as_source_annotations
+  summary: 'The annotation validator must not interpret //globular: directives inside raw string literals as source-level
+    awareness contracts.
+
+    '
+  related_invariants:
+  - awareness.annotation_scanner.production_source_only
+  safe_alternative: 'Use Go AST to identify string literals; skip annotations inside ast.BasicLit nodes where the value starts
+    with a backtick (raw string literals).
+
+    '
+- id: auto_lower_replication_factor
+  summary: 'Automatically lower Scylla keyspace RF below policy when storage nodes decrease. RF must only ever increase automatically,
+    never decrease.
+
+    '
+  related_invariants:
+  - scylla.critical_keyspace_replication_policy
+  safe_alternative: 'Keyspace RF can only increase automatically; any RF decrease requires an explicit operator-approved workflow
+    with quorum impact analysis.
+
+    '
+- id: ignore_rf_violation_in_multi_node
+  summary: 'Allow a critical keyspace to remain below required RF on a multi-node cluster without emitting a doctor finding
+    or repair action.
+
+    '
+  related_invariants:
+  - scylla.critical_keyspace_replication_policy
+  safe_alternative: 'Doctor must emit CRITICAL for any critical keyspace below required RF on a cluster with >=2 nodes; include
+    an ALTER KEYSPACE command in the remediation step.
+
+    '
+- id: treat_bootstrap_state_as_authoritative
+  summary: 'Treat desired-state records with source=bootstrap or authoritative=false as final authoritative state without
+    running the controller promotion pass.
+
+    '
+  related_invariants:
+  - desired.bootstrap_state_requires_promotion
+  safe_alternative: 'Filter desired-state records by authoritative=true before acting; bootstrap records must wait for the
+    promotion reconciler to rewrite them as authoritative.
+
+    '
+- id: claim_convergence_from_bootstrap_records
+  summary: 'Mark the cluster as converged or allow node-agent to install from bootstrap records before the controller promotion
+    reconciler has validated and rewritten them as authoritative.
+
+    '
+  related_invariants:
+  - desired.bootstrap_state_requires_promotion
+  safe_alternative: 'Check the authoritative field before marking a desired record eligible for install; skip records with
+    source=bootstrap until promotion has run.
+
+    '
+- id: stop_runtime_on_missing_key
+  summary: 'Stop a managed runtime service (keepalived, envoy, minio) solely because the control-plane key is absent or could
+    not be read. Missing key must mean HOLD_LAST_KNOWN_GOOD.
+
+    '
+  related_invariants:
+  - critical_state.absence_is_not_destructive_intent
+  safe_alternative: 'When the control-plane key is absent, read the LKG file and apply last-known-good configuration; emit
+    a doctor alert but do not stop the service.
+
+    '
+- id: delete_runtime_on_timeout
+  summary: 'Interpret an etcd read timeout as a stop or delete intent and halt the runtime service. Timeout must be treated
+    as a temporary authority unavailability, not a destructive command.
+
+    '
+  related_invariants:
+  - critical_state.absence_is_not_destructive_intent
+  safe_alternative: 'On etcd read timeout, retain current runtime state; set status=degraded; retry at the next tick after
+    the configured timeout window.
+
+    '
+- id: treat_invalid_spec_as_disable_intent
+  summary: 'Accept a spec that fails schema validation or checksum as a valid disable-intent and stop the runtime. Invalid
+    specs must be ignored; LKG must be held.
+
+    '
+  related_invariants:
+  - critical_state.absence_is_not_destructive_intent
+  - destructive_actions.require_explicit_guard
+  safe_alternative: 'Reject specs that fail schema or checksum validation; treat them as absent; only a valid ExplicitDisable
+    spec with matching generation and signed reason stops the runtime.
+
+    '
+- id: overwrite_lkg_with_invalid_state
+  summary: 'Write invalid or unvalidated state to the LKG file, overwriting the last valid configuration. LKG writes must
+    pass checksum and generation validation before committing.
+
+    '
+  related_invariants:
+  - runtime.last_known_good_required_for_critical_consumers
+  safe_alternative: 'Validate checksum and generation monotonicity before writing LKG; abort the write if validation fails;
+    keep the prior valid LKG file.
+
+    '
+- id: ignore_lkg_when_authority_unavailable
+  summary: 'Fail or use empty config when the authority source is unreachable instead of falling back to the validated LKG
+    file.
+
+    '
+  related_invariants:
+  - runtime.last_known_good_required_for_critical_consumers
+  safe_alternative: 'Always fall back to the LKG file when authority is unreachable; treat a missing LKG as first-boot only;
+    never serve empty config on authority timeout.
+
+    '
+- id: accept_corrupt_lkg
+  summary: 'Load and apply a LKG file that fails checksum or generation validation rather than rejecting it and retaining
+    the prior valid state.
+
+    '
+  related_invariants:
+  - runtime.last_known_good_required_for_critical_consumers
+  safe_alternative: 'Reject LKG files with invalid checksums; log the failure; retain the previous valid state; emit a doctor
+    alert for operator review.
+
+    '
+- id: write_critical_key_without_registered_owner
+  summary: 'Write to a critical etcd key from code that is not the registered owner in critical_state_registry. Unknown writers
+    must be rejected.
+
+    '
+  related_invariants:
+  - critical_state.registry_ownership_required
+  safe_alternative: 'Register all critical-key owners in critical_state_registry before writing; validate writer identity
+    via ValidateCriticalKeyOwner() on every write.
+
+    '
+- id: delete_critical_key_without_policy
+  summary: 'Delete a critical etcd key without checking the registry-defined delete policy. Keys with DeleteNeverAutomatic
+    must require explicit operator approval.
+
+    '
+  related_invariants:
+  - critical_state.registry_ownership_required
+  - critical_state.deletion_requires_audited_intent
+  safe_alternative: 'Check the registry-defined delete policy before deletion; keys with DeleteNeverAutomatic require a validated
+    delete-approval marker at the correct generation.
+
+    '
+- id: accept_unknown_writer_for_critical_state
+  summary: 'Accept a write to a registry-managed critical key from a writer_leader_id or service that does not match the registered
+    owner.
+
+    '
+  related_invariants:
+  - critical_state.registry_ownership_required
+  safe_alternative: 'Reject writes from unregistered writers with a typed error; emit a doctor alert identifying the unauthorized
+    writer; do not commit the write.
+
+    '
+- id: delete_desired_state_without_approval_marker
+  summary: 'Delete a critical desired-state key from etcd without first creating the delete-approval marker at /globular/<domain>/delete_approval/<generation>.
+
+    '
+  related_invariants:
+  - critical_state.deletion_requires_audited_intent
+  safe_alternative: 'Create the delete-approval marker at the correct path before deletion; validate its generation and leader
+    identity before committing the delete operation.
+
+    '
+- id: treat_missing_key_as_delete_intent
+  summary: 'Interpret the absence of a desired-state key as an intention to delete the corresponding runtime state. Missing
+    key must trigger restoration, not deletion.
+
+    '
+  related_invariants:
+  - critical_state.deletion_requires_audited_intent
+  - critical_state.absence_is_not_destructive_intent
+  safe_alternative: 'When a desired-state key is absent, restore from registry-defined default or LKG; emit a doctor alert;
+    never delete the runtime based on key absence alone.
+
+    '
+- id: accept_stale_delete_approval
+  summary: 'Accept a delete-approval marker with a generation that does not match the current key generation, or one signed
+    by a non-leader node.
+
+    '
+  related_invariants:
+  - critical_state.deletion_requires_audited_intent
+  safe_alternative: 'Validate approval generation against the current key revision; verify the approving leader ID; reject
+    approvals older than 24 hours.
+
+    '
+- id: start_new_global_work_while_completion_is_blocked
+  summary: 'Start a new global reconcile phase when completion of an already-started phase is blocked. New work must wait
+    behind completion, not starve it.
+
+    '
+  related_invariants:
+  - reconcile.global_work_must_not_starve_completion
+  safe_alternative: 'Give completion lanes higher priority; block new global work phases until the prior completion phase
+    has committed its terminal record to etcd.
+
+    '
+- id: allow_reconcile_tick_to_starve_terminal_commit
+  summary: 'Allow a reconcile tick to prevent or delay the terminal commit of an already-running reconcile phase by acquiring
+    shared resources first.
+
+    '
+  related_invariants:
+  - reconcile.global_work_must_not_starve_completion
+  safe_alternative: 'Use a dedicated completion lane not subject to reconcile-tick acquisition; completion always runs to
+    terminal before new ticks are admitted.
+
+    '
+- id: run_unbounded_query_in_reconcile_path
+  summary: 'Execute a Scylla, etcd, or DNS query in a critical reconcile path without a context deadline or timeout. All critical-path
+    queries must be bounded at 5-15s.
+
+    '
+  related_invariants:
+  - critical_queries.must_be_bounded
+  safe_alternative: 'Wrap all critical-path queries with context.WithTimeout (5-15s); map ctx.Err() timeout to DEGRADED status
+    immediately.
+
+    '
+- id: ignore_context_timeout_in_critical_query
+  summary: 'Ignore or suppress the ctx.Err() result from a bounded query in a critical path, allowing the caller to proceed
+    as if the query succeeded.
+
+    '
+  related_invariants:
+  - critical_queries.must_be_bounded
+  safe_alternative: 'Always check ctx.Err() after a bounded query; return the timeout error to the caller; do not proceed
+    as if the query succeeded.
+
+    '
+- id: block_controller_loop_on_external_query
+  summary: 'Allow a slow or unresponsive external backend (Scylla, DNS, etcd) to block the main controller reconcile loop
+    indefinitely without a timeout gate.
+
+    '
+  related_invariants:
+  - critical_queries.must_be_bounded
+  safe_alternative: 'Run external queries in a goroutine with select on timeout; return a timeout error to the reconcile loop
+    immediately if the deadline is exceeded.
+
+    '
+- id: require_derived_state_before_publishing_authority
+  summary: 'Gate authoritative desired-state publication on the success of derived or projection pipelines. Projections are
+    consumers of authority, not prerequisites.
+
+    '
+  related_invariants:
+  - derived_state.must_not_block_authority
+  safe_alternative: 'Publish authority state (DesiredService, DesiredRelease) in a dedicated lane that does not wait for projection
+    or cache pipelines to succeed.
+
+    '
+- id: block_authority_on_cache_availability
+  summary: 'Refuse to publish authoritative state because a cache, projection, or secondary index is unavailable. Authority
+    must publish regardless of derived-state health.
+
+    '
+  related_invariants:
+  - derived_state.must_not_block_authority
+  safe_alternative: 'Authority publication runs unconditionally; derived-state failures emit their own alerts but must not
+    block the authority lane.
+
+    '
+- id: require_dns_for_dns_recovery
+  summary: 'Require hostname resolution (DNS) to run DNS repair or recovery CLI commands. DNS recovery must work via direct
+    IP:port fallback.
+
+    '
+  related_invariants:
+  - recovery.must_not_depend_on_dns_only
+  safe_alternative: 'All DNS recovery CLI commands must support --addr for direct IP:port fallback; resolve endpoints from
+    /globular/cluster/dns/records when DNS UDP fails.
+
+    '
+- id: require_service_discovery_when_discovery_is_unhealthy
+  summary: 'Require service-discovery lookup when discovery itself is part of the failure being recovered from. Recovery paths
+    must support direct endpoint configuration.
+
+    '
+  related_invariants:
+  - recovery.must_not_depend_on_dns_only
+  safe_alternative: 'Provide --direct-ip or --addr options in all CLI recovery commands; fall back to Tier-0 host lists (GetMinioHosts/GetScyllaHosts)
+    from etcd.
+
+    '
+- id: stop_runtime_from_ambiguous_disable
+  summary: 'Stop a runtime service when the disable spec is malformed, missing a reason, or has a stale generation — without
+    validating explicit intent.
+
+    '
+  related_invariants:
+  - destructive_actions.require_explicit_guard
+  safe_alternative: 'Require IsExplicitDisable() validation before acting on a disable spec; treat any spec that fails validation
+    as absent and hold LKG.
+
+    '
+- id: wipe_state_without_approved_transition
+  summary: 'Wipe persistent state (MinIO .minio.sys, ScyllaDB data directory, etcd snapshots) without a controller-approved
+    transition record for the correct generation.
+
+    '
+  related_invariants:
+  - destructive_actions.require_explicit_guard
+  - topology.reconciler_must_respect_safety_contract
+  safe_alternative: 'Wipe persistent state only through a controller-approved workflow with a transition record matching the
+    current generation; node-agent verifies before proceeding.
+
+    '
+- id: delete_runtime_data_from_ambiguous_state
+  summary: 'Delete or reset runtime data when the system is in an ambiguous state (recovering, no quorum, missing desired-state
+    key) without explicit operator approval.
+
+    '
+  related_invariants:
+  - destructive_actions.require_explicit_guard
+  safe_alternative: 'Deletion requires a delete-approval marker that matches the current generation, was created by the current
+    leader, and is not older than 24h.
+
+    '
+- id: perform_destructive_action_from_inferred_intent
+  summary: 'Infer that a destructive action is desired from indirect signals (missing key, timeout, local disk state) rather
+    than requiring explicit audited intent.
+
+    '
+  related_invariants:
+  - destructive_actions.require_explicit_guard
+  - critical_state.absence_is_not_destructive_intent
+  safe_alternative: 'Every destructive action requires an explicit typed approval record; do not infer intent from missing
+    keys, etcd timeouts, or local disk state.
+
+    '
+- id: infer_topology_from_local_disk
+  summary: 'Decide topology membership or configuration from local disk state (minio data directory, scylla data files) instead
+    of the authoritative desired-state in etcd.
+
+    '
+  related_invariants:
+  - topology.reconciler_must_respect_safety_contract
+  - objectstore.desired_state_must_be_registry_governed
+  safe_alternative: 'Read topology from etcd (ObjectStoreDesiredState for MinIO, node records for ScyllaDB); if the key is
+    absent, alert and hold; never derive topology from disk state.
+
+    '
+- id: reconcile_topology_without_contract
+  summary: 'Apply a topology change in the drift reconciler without first running topology safety preflight checks (quorum
+    viability, participant validity, objectstore consistency).
+
+    '
+  related_invariants:
+  - topology.reconciler_must_respect_safety_contract
+  safe_alternative: 'Run topology safety preflight (quorum check, participant validation, objectstore consistency) before
+    any drift action; abort the plan if preflight fails.
+
+    '
+- id: apply_topology_drift_without_generation_check
+  summary: 'Apply a topology drift action without checking the topology generation, allowing stale drift plans to modify live
+    topology.
+
+    '
+  related_invariants:
+  - topology.reconciler_must_respect_safety_contract
+  safe_alternative: 'Include the topology generation in every drift plan; validate at execution time that the plan generation
+    still matches the live generation before applying.
+
+    '
+- id: keep_drift_warning_forever_without_escalation
+  summary: 'Keep service drift finding at WARN severity indefinitely regardless of age or affected services. Drift older than
+    5 minutes is ERROR; drift on critical services is CRITICAL.
+
+    '
+  related_invariants:
+  - services.drift_must_age_and_escalate
+  safe_alternative: 'Apply driftSeverity() escalation: WARN for age <=5 min, ERROR for >5 min, CRITICAL for >5 min on a service
+    defined as critical.
+
+    '
+- id: omit_pki_ca_from_critical_registry
+  summary: 'Publish /globular/pki/ca without adding it to config.CriticalEtcdKeys and critical_state_registry, leaving CA
+    metadata without owner, restore, or delete policy.
+
+    '
+  related_invariants:
+  - pki.ca_metadata_must_be_published
+  - critical_state.registry_ownership_required
+  safe_alternative: 'Add /globular/pki/ca to config.CriticalEtcdKeys and register it in critical_state_registry with owner=cluster_controller
+    and policy=DeleteNeverAutomatic.
+
+    '
+- id: hardcode_command_package_runtime_expectations_forever
+  summary: 'Keep the hardcoded commandPackage() list in the doctor rule instead of migrating to catalog-driven package kind
+    checks. The list will drift as new command packages are added.
+
+    '
+  related_invariants:
+  - runtime.installed_state_must_match_package_kind
+  safe_alternative: 'Migrate commandPackage() classification to read from the catalog package.kind field; add COMMAND entries
+    to the catalog, not to a hardcoded list.
+
+    '
+- id: require_systemd_unit_for_command_package
+  summary: 'Expect COMMAND-type packages (yt-dlp, rclone, sha256sum, globular-cli) to have a systemd unit and flag them as
+    runtime-mismatch if no unit exists.
+
+    '
+  related_invariants:
+  - runtime.installed_state_must_match_package_kind
+  safe_alternative: 'Check package.kind before requiring a systemd unit; COMMAND packages never require a unit; only SERVICE
+    and INFRASTRUCTURE packages do.
+
+    '
+- id: ignore_package_kind_in_runtime_proof
+  summary: 'Use only the package name (not the catalog-defined kind) to decide whether a systemd unit is required. This causes
+    false positives for new command packages.
+
+    '
+  related_invariants:
+  - runtime.installed_state_must_match_package_kind
+  safe_alternative: 'Use the catalog-defined kind as the sole gate for systemd unit requirement; package name heuristics must
+    not override catalog kind.
+
+    '
+- id: start_minio_without_objectstore_desired_state
+  summary: 'Allow node-agent to start MinIO when /globular/objectstore/config is absent, relying on local state or stale config
+    instead.
+
+    '
+  related_invariants:
+  - objectstore.desired_state_must_be_registry_governed
+  - objectstore.topology_contract
+  safe_alternative: 'Gate MinIO startup on /globular/objectstore/config presence in etcd; if absent, hold LKG and emit a critical
+    alert; never start from local state.
+
+    '
+- id: infer_objectstore_topology_from_local_state
+  summary: 'Infer MinIO pool membership from local disk (data directory, .minio.sys, last-run topology) when /globular/objectstore/config
+    is absent.
+
+    '
+  related_invariants:
+  - objectstore.desired_state_must_be_registry_governed
+  - objectstore.topology_contract
+  safe_alternative: 'Read /globular/objectstore/config from etcd; if absent, do not infer topology; alert and wait for the
+    controller to publish desired state.
+
+    '
+- id: omit_objectstore_config_from_critical_registry
+  summary: 'Publish /globular/objectstore/config without adding it to config.CriticalEtcdKeys and critical_state_registry,
+    leaving objectstore desired state without governance.
+
+    '
+  related_invariants:
+  - objectstore.desired_state_must_be_registry_governed
+  - critical_state.registry_ownership_required
+  safe_alternative: 'Register /globular/objectstore/config in config.CriticalEtcdKeys with owner=cluster_controller and a
+    defined restore policy.
+
+    '
+- id: etcd.restart_nodes_without_nospace_fix
+  summary: 'Restarting etcd nodes when NOSPACE is active does not help. The restarted node
+
+    rejoins the cluster but immediately encounters the same alarm condition and cannot
+
+    commit writes. Leader election continues to fail. Resolve the disk pressure first.
+
+    '
+  related_invariants:
+  - etcd.must_not_exceed_quota
+  safe_alternative: 'Resolve disk pressure first (compact + defrag + verify quota below threshold); only restart etcd nodes
+    after disk usage is confirmed below quota.
+
+    '
+- id: controller.restart_before_etcd_stable
+  summary: 'Restarting controller processes while etcd is in NOSPACE or leader-instability state
+
+    causes each restarted instance to immediately attempt to write a new leader lease to
+
+    etcd. These writes all fail (NOSPACE) or contend during re-election, amplifying the
+
+    load on an already-stressed etcd cluster and delaying recovery.
+
+    '
+  related_invariants:
+  - etcd.quorum_must_be_stable_before_controller_action
+  safe_alternative: 'Wait for all etcd members to return to quorum and a leader to be elected before restarting controller
+    processes; premature restart amplifies write pressure.
+
+    '
+- id: controller.kill_to_clear_lease_contention
+  summary: 'Killing controller processes does not clear lease contention — the killed process
+
+    held the lease, and killing it without etcd being healthy means the lease expires
+
+    and all remaining controllers immediately attempt re-election, adding more write
+
+    pressure. Only etcd stability resolves lease contention.
+
+    '
+  related_invariants:
+  - etcd.quorum_must_be_stable_before_controller_action
+  safe_alternative: 'Wait for etcd to stabilize; the lease expires after its TTL without requiring process kills; only restart
+    controllers after etcd is fully healthy.
+
+    '
+- id: workflow.restart_before_control_plane_stable
+  summary: 'Restarting the workflow service or retrying workflow steps while etcd and controller
+
+    are unstable causes immediate re-failure: the new dispatch attempt also times out
+
+    because the control plane cannot serve it. Resolve etcd → controller → then workflow.
+
+    '
+  related_invariants:
+  - workflow.dispatch_requires_stable_control_plane
+  safe_alternative: 'Stabilize in order: etcd, then controller, then workflow. Restarting workflow before the control plane
+    is ready will immediately re-fail.
+
+    '
+- id: workflow.treat_as_root_cause
+  summary: 'Workflow dispatch timeouts are always a terminal symptom of control-plane instability.
+
+    The correct fix order is: etcd → controller → workflow. Fixing or restarting the
+
+    workflow service first will not unblock it — it will re-fail immediately because the
+
+    underlying etcd/controller issue is unresolved.
+
+    '
+  related_invariants:
+  - workflow.dispatch_requires_stable_control_plane
+  safe_alternative: 'Treat workflow timeouts as a symptom, not the root cause; diagnose etcd and controller first; workflow
+    recovers automatically once the control plane is healthy.
+
+    '
+- id: etcd.disarm_before_compact
+  summary: 'Run etcdctl alarm disarm before the etcd disk is actually below quota — specifically,
+
+    before compact + defrag + verified disk size reduction have all completed.
+
+    '
+  why_wrong: 'Disarming the alarm does not free disk space. It only clears the NOSPACE signal.
+
+    If compact+defrag have not run, the disk is still above quota. etcd will re-hit
+
+    the NOSPACE limit on the very next write, re-triggering the alarm immediately.
+
+    The cluster appears to recover but fails again seconds later.
+
+    '
+  safe_alternative: "Always run in this safe order:\n  1. etcdctl compact <rev>          — compact revision history\n  2.\
+    \ etcdctl defrag --endpoints=<all> — defragment all members\n  3. Verify disk usage dropped below quota (df -h or du)\n\
+    \  4. etcdctl alarm disarm           — only after disk is confirmed below quota\n"
+  related_invariants:
+  - etcd.quorum_must_be_stable_before_controller_action
+- id: ignoring_orphan_processes_assuming_systemd_handles_them
+  summary: 'Assume systemd''s Restart= directive cleanly terminates all child processes from a prior cgroup escape when the
+    service restarts, without adding an ExecStartPre kill step.
+
+    '
+  safe_alternative: 'Add ExecStartPre=+/bin/sh -c ''pkill -9 -x <binary> || true'' to every service unit that binds a port;
+    this kills any orphaned process from a prior cgroup escape before the new process tries to bind. MUST use -x (process-name
+    match), never -f — `pkill -f` matches the FULL command line including the parent shell''s argv (which contains the binary
+    name as the pkill argument), so the parent shell self-SIGKILLs and ExecStartPre fails. For binary names >15 chars use the
+    bracket trick: pkill -9 -f ''[<first_char>]<rest>''.
+
+    '
+  related_invariants:
+  - service.endpoint.cgroup_escape_guard
+- id: relying_on_service_restart_without_pkill_guard
+  summary: 'Restart a service unit via systemctl or Restart=on-failure without first killing any orphaned process that escaped
+    its cgroup and may still be holding the port.
+
+    '
+  safe_alternative: 'Gate every service restart with an ExecStartPre kill step; the guard must run even if systemd believes
+    the service is stopped, because cgroup-escaped orphans do not appear in systemd state.
+
+    '
+  related_invariants:
+  - service.endpoint.cgroup_escape_guard
+  - service.endpoint.etcd_address_reachability
+- id: circuit_breaker_that_blocks_all_reconciliation_on_single_service_failure
+  summary: 'Implement a reconciliation circuit breaker that halts the entire reconcile loop when any single service install
+    fails, rather than isolating that service and continuing with others.
+
+    '
+  safe_alternative: 'Isolate per-service install failures; mark the failing service as in-error and continue reconciling others.
+    A global circuit breaker must only fire on control-plane instability (etcd unavailable, no leader), not on individual
+    service errors.
+
+    '
+  related_invariants:
+  - service.endpoint.cgroup_escape_guard
+  - convergence.no_infinite_retry
+- id: manually_seeding_desired_state_per_node
+  summary: 'Manually write DesiredService or DesiredRelease records per-node via direct etcd writes or gRPC calls outside
+    the BOM pipeline, creating records that the promotion reconciler did not validate.
+
+    '
+  safe_alternative: 'All desired state must flow through the BOM release pipeline (platform-upgrade -> ServicesDesiredSet
+    -> promotion reconciler). Manual seeding bypasses provenance tracking.
+
+    '
+  related_invariants:
+  - service.desired_state.bom_completeness
+- id: skipping_service_packages_from_bom
+  summary: 'Omit one or more service packages from the release BOM, causing them to be absent from ServicesDesiredSet and
+    therefore never installed on cluster nodes.
+
+    '
+  safe_alternative: 'Validate that every service in services.yaml is present in the BOM before publishing; use graph-integrity
+    or CI check to enforce BOM completeness.
+
+    '
+  related_invariants:
+  - service.desired_state.bom_completeness
+- id: writing_desired_state_via_grpc_only_during_bootstrap
+  summary: 'Write desired state records only through the bootstrap gRPC call at cluster init time, without ensuring the BOM
+    pipeline runs on every subsequent upgrade.
+
+    '
+  safe_alternative: 'Bootstrap writes seed initial state; all subsequent desired state must flow through the BOM release pipeline.
+    Never rely on a one-time gRPC bootstrap for ongoing desired state management.
+
+    '
+  related_invariants:
+  - service.desired_state.bom_completeness
+- id: manually_patching_release_phase_to_available
+  summary: 'Manually set ServiceRelease.Phase to AVAILABLE in etcd after a wave succeeds but the commit RPC fails, bypassing
+    the workflow''s terminal-state commit.
+
+    '
+  safe_alternative: 'Retry the workflow''s commit RPC with idempotent semantics; the workflow system handles the case where
+    a wave succeeds but the terminal commit fails. Never write phase directly to etcd.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+- id: skipping_workflow_run_to_force_available
+  summary: 'Skip the workflow service entirely and write AVAILABLE directly to a ServiceRelease record in etcd to unstick
+    a stuck release.
+
+    '
+  safe_alternative: 'Diagnose why the workflow commit failed; fix the underlying cause (Scylla timeout, leader change, network);
+    retry the workflow run through the normal dispatch path.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+  - convergence.no_infinite_retry
+- id: marking_release_available_from_local_success
+  summary: 'Mark a ServiceRelease as AVAILABLE based on a node-local install success message without waiting for the wave-level
+    commit to succeed in the workflow service.
+
+    '
+  safe_alternative: 'AVAILABLE status is written only by the workflow service after all wave steps commit their terminal records
+    to ScyllaDB; local install confirmation is a prerequisite, not the final authority.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+- id: manually_running_services_desired_set_per_service
+  summary: 'Call the ServicesDesiredSet RPC individually for each service to work around a missing or incomplete BOM, creating
+    desired-state records outside the platform-upgrade pipeline.
+
+    '
+  safe_alternative: 'Fix the BOM to include the missing service; re-run platform-upgrade to trigger the full desired-state
+    pipeline. One-off RPC calls bypass provenance tracking and promotion validation.
+
+    '
+  related_invariants:
+  - service.desired_state.bom_completeness
+- id: assuming_publish_implies_desired_state
+  summary: 'Assume that because a service artifact is published (AVAILABLE in the repository), its DesiredService record already
+    exists in etcd and nodes will install it automatically.
+
+    '
+  safe_alternative: 'Publishing an artifact does not create desired state. Desired state is written by platform-upgrade via
+    ServicesDesiredSet; verify that DesiredService exists for each node before expecting installation.
+
+    '
+  related_invariants:
+  - service.desired_state.bom_completeness
+- id: retry_install_blindly
+  summary: 'Retry a failed install action on every reconcile tick without checking whether the failure is deterministic or
+    whether the installed state was partially committed.
+
+    '
+  safe_alternative: 'Before retrying, check whether installed-state already exists in etcd (idempotency check); classify the
+    failure type; apply FailureClass-based retry policy with a capped number of attempts.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+  - convergence.no_infinite_retry
+- id: clear_action_before_installed_state
+  summary: 'Delete or clear the in-flight install action from the action queue before the installed-state and result records
+    are written and confirmed in etcd.
+
+    '
+  safe_alternative: 'Write installed-state and then delete the action atomically in a single etcd Txn; if the transaction
+    fails, leave the action in place and retry on the next tick.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+- id: mark_release_available_from_local_success
+  summary: 'Mark a release wave as AVAILABLE immediately after a single node reports local install success, before all wave
+    participants have confirmed and before the commit RPC succeeds.
+
+    '
+  safe_alternative: 'Collect confirmation from all wave participants; submit the terminal commit only after all have confirmed;
+    the workflow service writes AVAILABLE on commit success.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+  - convergence.no_infinite_retry
+- id: restart_mcp_without_killing_orphan
+  summary: 'Restart globular-mcp.service without first killing any orphaned mcp_server process from a prior run that escaped
+    its cgroup and is holding port 10260.
+
+    '
+  safe_alternative: 'The globular-mcp.service unit must include ExecStartPre=+/bin/sh -c ''pkill -9 -x mcp_server || true''
+    to terminate orphaned processes before the new instance tries to bind. MUST use -x (process-name match), never -f —
+    `pkill -f` also matches the parent shell''s argv and self-SIGKILLs.
+
+    '
+  related_invariants:
+  - runtime.installed_state_not_liveness
+- id: reduce_bind_retry_count_to_mask_orphan
+  summary: 'Reduce the number of bind retries in the MCP server to avoid seeing the ''address already in use'' error, without
+    fixing the orphaned process that holds the port.
+
+    '
+  safe_alternative: 'Fix the root cause: add an ExecStartPre kill step to the unit file so orphans are always cleared before
+    bind. Bind retry count is irrelevant once the port is always free at startup.
+
+    '
+  related_invariants:
+  - runtime.installed_state_not_liveness
+- id: change_mcp_port_as_workaround
+  summary: 'Change the MCP server''s listen port from 10260 to a different port to avoid the orphan-held port conflict, leaving
+    the orphaned process alive and the original port occupied.
+
+    '
+  safe_alternative: 'Kill the orphan with an ExecStartPre pkill guard and keep port 10260 as the canonical MCP port. Port
+    changes invalidate all existing client configurations and etcd service records.
+
+    '
+  related_invariants:
+  - runtime.installed_state_not_liveness
+- id: manually_start_mcp_without_fixing_spec
+  summary: 'Manually run systemctl start globular-mcp.service after a Day-1 install to work around a missing start_services
+    step in the spec, without updating the spec.
+
+    '
+  safe_alternative: 'Add a start_services step to mcp_service.yaml for the Day-1 install; the spec is the source of truth
+    for what runs after install. Manual systemctl calls are not durable across reinstalls.
+
+    '
+  related_invariants:
+  - convergence.no_infinite_retry
+- id: skip_health_checks_to_avoid_waitactive_timeout
+  summary: 'Remove or disable health checks in the MCP spec or unit file to avoid WaitActive timeout errors, instead of fixing
+    the underlying reason the service does not reach active state.
+
+    '
+  safe_alternative: 'Diagnose why the service does not reach active state (missing dependency, port conflict, missing config);
+    fix the root cause; keep health checks in place as early-failure guards.
+
+    '
+  related_invariants:
+  - install.result.atomic_commit
+  - convergence.no_infinite_retry
+
+# ── Awareness system self-governance forbidden fixes ──────────────────────────
+
+- id: edit_awareness_yaml_without_graph_rebuild
+  summary: |
+    Edit any awareness YAML knowledge file (invariants.yaml, forbidden_fixes.yaml,
+    causal_rules.yaml, failure_modes.yaml, agent_playbooks.yaml, path_weights.yaml)
+    and then immediately rely on the graph's decision_context output without rebuilding.
+    The graph is now stale and will return paths that do not reflect the edit.
+  related_invariants:
+    - awareness.knowledge.graph_rebuild_after_yaml_edit
+  safe_alternative: |
+    After editing any awareness YAML, run 'globular awareness build' before calling
+    awareness.decision_context or any other graph-querying tool. Treat the graph as
+    STALE until the build completes.
+
+- id: rely_on_stale_graph_after_knowledge_edit
+  summary: |
+    Use the awareness graph's decision paths, coverage, or blind_spots as authoritative
+    guidance immediately after a knowledge YAML edit, without rebuilding the graph.
+    A stale graph silently omits the newly added forbidden_fixes and invariants.
+  related_invariants:
+    - awareness.knowledge.graph_rebuild_after_yaml_edit
+  safe_alternative: |
+    Check graph freshness with awareness.session_start before using decision_context.
+    If the graph is stale, rebuild. Never treat stale-graph output as current guidance.
+
+- id: skip_awareness_preflight_before_yaml_edit
+  summary: |
+    Edit high-risk awareness files (graph/domain.go, semantic/score.go, integrity/
+    impact_path.go, docs/awareness/knowledge/*.yaml) without first calling
+    awareness.preflight or awareness.decision_context to check what the edit touches.
+    This is editing the safety system without reading its own guardrails first.
+  related_invariants:
+    - awareness.preflight.required_before_edit
+    - awareness.knowledge.graph_rebuild_after_yaml_edit
+  safe_alternative: |
+    Before editing any file in the awareness package or docs/awareness/knowledge/,
+    call awareness.decision_context with goal and changed_files. Review forbidden_actions
+    and required_tests. Run all required_tests after the edit.
+
+- id: return_bare_no_match_without_coverage
+  summary: |
+    Return a bare NO_MATCH response from awareness.decision_context without including
+    the coverage map (graph, runtime, code_scan, raw_yaml) and blind_spots list.
+    NO_MATCH without coverage context silently implies safety, which is wrong.
+  related_invariants:
+    - awareness.mcp.decision_context_no_bare_no_match
+  safe_alternative: |
+    Always return coverage and blind_spots regardless of whether decision paths exist.
+    The consumer must be able to determine WHY there are no paths (not checked vs.
+    checked clean vs. graph unavailable).
+
+- id: treat_no_match_as_safe_for_high_risk_files
+  summary: |
+    Treat a NO_MATCH result from awareness.decision_context as evidence that an edit
+    is safe for high-risk files. NO_MATCH means the graph has no paths — it does NOT
+    mean no risk exists. The graph may be stale, the files may be unindexed, or the
+    relevant invariants may not have been added yet.
+  related_invariants:
+    - awareness.mcp.decision_context_no_bare_no_match
+  safe_alternative: |
+    When decision_context returns NO_MATCH: check coverage.graph (not_checked vs.
+    checked_clean), check blind_spots, and if the graph is fresh, check whether the
+    invariants governing those files have forbidden_fixes and required_tests defined.
+
+- id: skip_edge_domain_classification
+  summary: |
+    Add a new edge kind to graph/edges.go without adding its domain classification
+    to graph/domain.go. Unclassified edges default to the information domain, causing
+    decision-relevant edges to be silently downgraded in the semantic scorer.
+  related_invariants:
+    - awareness.graph.domain_classification_required
+  safe_alternative: |
+    For every new edge kind added to graph/edges.go, add the corresponding entry to
+    the edgeDomains map in graph/domain.go before merging. Decision-domain edges
+    must be explicit — they never default.
+
+- id: default_new_edge_to_decision_domain
+  summary: |
+    Add a new edge kind with an optimistic "decision" domain classification before
+    the edge has been used in real decision paths and verified to carry actionable
+    guidance. Overly broad decision classification inflates path scores and erodes
+    trust in decision_context output.
+  related_invariants:
+    - awareness.graph.domain_classification_required
+  safe_alternative: |
+    Start new edge kinds as "information" domain. Promote to "decision" domain only
+    after the edge has been validated in at least one real incident or preflight
+    scenario where the decision guidance was verified correct.
+
+- id: ignore_forbidden_fix_edges_in_scoring
+  summary: |
+    Score impact paths without giving extra weight to edges that lead to
+    forbidden_fix nodes. Paths that terminate at forbidden_fix nodes are PRE-EDIT
+    decision paths — the most actionable signals in the graph. Scoring them the
+    same as information paths causes them to be buried under less relevant results.
+  related_invariants:
+    - awareness.graph.domain_classification_required
+  safe_alternative: |
+    In ScoreImpactPath, apply the decision domain bonus (+25) to steps that touch
+    forbidden_fix or invariant nodes via EdgeForbids. Rank these paths first.
+
+- id: add_causal_rule_without_incident_evidence
+  summary: |
+    Add an entry to causal_rules.yaml based on theoretical reasoning without
+    a corresponding incident (INC-YYYY-NNNN) that demonstrated the failure chain.
+    Hypothetical rules clutter the causal graph with unverifiable noise.
+  related_invariants:
+    - awareness.knowledge.causal_rules_evidence_required
+  safe_alternative: |
+    Only add causal rules after an incident has been resolved and the chain has been
+    directly observed. Reference the incident ID in the rule's comment or metadata.
+    Set confidence to "low" until the chain recurs and is validated a second time.
+
+- id: apply_weight_changes_without_human_approval
+  summary: |
+    Directly modify path_weights.yaml without going through the learn_from_fix
+    proposal workflow and without human review. Weight changes alter the ranking
+    of all decision paths for every future preflight call.
+  related_invariants:
+    - awareness.weight_learning.human_approval_required
+  safe_alternative: |
+    Use awareness.learn_from_fix to propose weight adjustments. Wait for human
+    review and approval of the proposal. Only then promote the change to
+    path_weights.yaml and rebuild the graph.
+
+- id: promote_weights_without_graph_rebuild
+  summary: |
+    Promote a weight change from a proposal into path_weights.yaml and then
+    immediately rely on the new rankings without rebuilding the graph. The graph
+    reads weights at build time; live scoring uses the compiled graph, not the
+    YAML directly.
+  related_invariants:
+    - awareness.weight_learning.human_approval_required
+  safe_alternative: |
+    After promoting weight changes to path_weights.yaml, always run
+    'globular awareness build' to recompile the graph with the new weights.
+    Verify the ranking changes using awareness.decision_context on a known scenario.
+
+- id: lower_penalty_for_invalid_trust_paths
+  summary: |
+    Reduce the score penalty for paths with TrustInvalid edges (currently -100)
+    to make them "less invisible" in the output. Invalid paths represent broken
+    or stale graph edges — making them visible in decision output is more
+    dangerous than filtering them.
+  related_invariants:
+    - awareness.weight_learning.human_approval_required
+  safe_alternative: |
+    Invalid paths must score below any declared path. If invalid paths are surfacing
+    in practice, fix the graph data (reindex, validate) rather than inflating invalid
+    path scores to paper over the gap.
+
+- id: edit_impact_path_traversal_without_scoring_test
+  summary: |
+    Modify the impact path traversal algorithm (TraverseImpactPaths, traverseTyped,
+    edgeTrust, or impactEdgeKinds) without updating or adding tests that verify the
+    scoring behavior of the result. Traversal changes silently alter which paths the
+    decision_context returns.
+  related_invariants:
+    - awareness.preflight.required_before_edit
+  safe_alternative: |
+    Before modifying traversal: run TestPathScoring_* and TestDecisionContext_* tests.
+    After modifying: verify that verified decision paths still score above declared
+    information paths, and that invalid paths score below all valid paths.
+
+- id: remove_decision_edges_from_impact_kinds
+  summary: |
+    Remove EdgeForbids, EdgeTestedBy, EdgeRequiresTest, or EdgeEnforces from the
+    impactEdgeKinds set in impact_path.go. These are the ONLY edges that create
+    decision-domain traversal paths. Removing them causes decision_context to return
+    only information paths for all queries.
+  related_invariants:
+    - awareness.preflight.required_before_edit
+    - awareness.graph.domain_classification_required
+  safe_alternative: |
+    If an edge kind proves too noisy, add a scoring penalty instead of removing it
+    from impactEdgeKinds. The traversal must stay complete; filtering happens in scoring.
+
+- id: set_causal_rule_confidence_high_without_verification
+  summary: |
+    Set confidence: high on a causal rule that has only been observed once or only
+    in a controlled test environment. High confidence rules are presented to operators
+    as established fact, not hypothesis.
+  related_invariants:
+    - awareness.knowledge.causal_rules_evidence_required
+  safe_alternative: |
+    Use confidence: low for first-observed chains, confidence: medium after 2-3
+    confirmed recurrences, confidence: high only after the chain has been validated
+    across multiple independent incidents and multiple operator environments.
+
+- id: skip_blind_spots_when_graph_unavailable
+  summary: |
+    Return an empty blind_spots list from decisionContextNoGraph() when the graph
+    is unavailable. An empty blind_spots list when the graph is missing implies the
+    tool has full coverage — the opposite of the truth.
+  related_invariants:
+    - awareness.mcp.decision_context_no_bare_no_match
+  safe_alternative: |
+    When graph is unavailable, always include at least: "graph unavailable — run
+    'globular awareness build' first", "cannot check files for decision paths",
+    and "runtime not collected". These are always true in no-graph mode.
+
+- id: auto_rollback_on_crash
+  summary: |
+    Automatically install an older package version when the current version crashes
+    or fails its health check, without explicit operator approval.
+  related_invariants:
+    - controller.reconciler.no_downgrade_without_force
+  safe_alternative: |
+    When a service crashes, create an incident and halt convergence for that package.
+    Never install a lower version unless the operator explicitly runs a rollback command
+    with Force=true. Auto-rollback masks root causes and can compound incidents.
+
+- id: reconcile_from_in_memory_snapshot_after_failover
+  summary: |
+    After acquiring cluster leadership, load desired state from an in-memory snapshot
+    carried over from a prior leader session rather than reading fresh from etcd.
+  related_invariants:
+    - controller.reconciler.desired_state_from_etcd_only
+  safe_alternative: |
+    After every leader election, the reconciler must reload desired state exclusively
+    from etcd before running any convergence tick. In-memory state from a prior
+    leader session is stale by definition and must be discarded entirely.
+
+- id: hardcode_kind_list_in_reconciler
+  summary: |
+    Maintain a hardcoded list of service names or prefixes inside the reconciler to
+    classify packages as infrastructure vs service kind, duplicating the canonical
+    registry.
+  related_invariants:
+    - package.kind.single_canonical_source
+  safe_alternative: |
+    The reconciler must read kind from the package metadata (package.json or catalog).
+    No list of names or prefixes inside reconciler logic. If the metadata is missing,
+    fail loudly — do not fall back to a guess.
+
+- id: infer_kind_from_service_name
+  summary: |
+    Infer package kind (infrastructure vs service) from the service name string (e.g.
+    "xds" implies infrastructure) rather than reading from the canonical package
+    metadata registry.
+  related_invariants:
+    - package.kind.single_canonical_source
+  safe_alternative: |
+    Kind must always be read from package.json metadata. Service name is not a
+    reliable proxy for kind — names change, packages are renamed, and inference
+    creates silent mismatches that only surface at convergence time.
+
+- id: backfill_causal_chain_without_symptoms
+  summary: |
+    Create a causal_rules.yaml entry retroactively, from memory or logs, without
+    the actual symptom keywords that were observed during the incident. Without
+    real symptom keywords, the rule can never match a future incident's log output.
+  related_invariants:
+    - awareness.knowledge.causal_rules_evidence_required
+  safe_alternative: |
+    Only finalize a causal rule when you have the actual log output from the incident.
+    Extract the exact symptom keywords that appeared in logs (trigger_keywords and
+    sequence[*].keywords must be literal log fragments, not paraphrases).
+
+# ── ops_knowledge seed integrity ─────────────────────────────────────────────
+
+- id: allow_human_to_overwrite_seed_to_silence_finding
+  summary: |
+    When the doctor flags ops_knowledge.seed_drift, have a human operator
+    overwrite the seed-tagged entry directly so the finding stops firing,
+    without investigating why ai-memory diverged from the bundle.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Treat the bundle as the authoritative source: re-run the seeder workflow
+    to upsert back to the bundle's sha256. Investigate WHY the drift happened
+    (misconfigured CLI tool, bypassed RBAC check, manual edit on disk). The
+    finding is the signal, not the problem.
+
+- id: increase_drift_threshold_to_hide_low_severity_drift
+  summary: |
+    Widen the drift-detection tolerance so "small" content differences between
+    the bundle and ai-memory no longer trigger the finding. Reduces noise by
+    losing signal that the immutability layer might be broken.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Any drift on a seed-tagged entry is a fact about the immutability layer,
+    not a noise level to tune. Re-run the seeder, audit how the drift arose,
+    and fix the originating CLI / RBAC bypass.
+
+- id: widen_seeder_role_to_admin
+  summary: |
+    Grant the 'admin' role permission to UPDATE/DELETE entries with
+    provenance.source=seed, so admin-driven workflows can mutate seed
+    entries directly. Removes the immutability boundary that protects
+    operational knowledge from poisoning.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Reject every write to seed entries unless principal is exactly "seeder".
+    Admin sessions that need to alter operational knowledge re-author the
+    YAML in the bundle, rebuild, reinstall, and re-run the seeder workflow.
+
+- id: silently_swallow_permission_denied_in_audit_log
+  summary: |
+    When a non-seeder principal is denied mutation of a seed entry, return
+    the error to the caller but skip the audit log entry or downgrade it
+    below WARN — to avoid log noise from "expected" denials.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Every denied write to a seed entry is logged at WARN with principal id +
+    entry id. The audit trail is the only way to discover an attacker
+    probing the immutability layer or a misconfigured tool repeatedly hitting
+    the rejection.
+
+- id: skip_immutability_check_for_test_environments
+  summary: |
+    Disable the seed-immutability check when a test-environment flag is set,
+    so integration tests can prepare seed-tagged entries without going through
+    a real seeder workflow. Creates a code path that exists nowhere in
+    production but ships in the same binary.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Tests stand up an actual "seeder" service-account and authenticate as that
+    principal. The immutability check is identical in production and test.
+    Test-only branches in security-critical code are forbidden surface area.
+
+- id: run_seeder_inline_in_controller_startup_without_workflow_service
+  summary: |
+    Call the seeder logic directly from the controller's startup path
+    (synchronously or via a goroutine) instead of scheduling it as a proper
+    Workflow Service workflow. Bypasses idempotency, bounded retry, and the
+    terminal-state contract that the 4-layer model relies on.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Seeder runs as a workflow with idempotent semantics, bounded retry, and
+    terminal SUCCEEDED/FAILED. Controller startup schedules the workflow if
+    bundle's seed_version differs from ai-memory metadata; the workflow
+    service owns execution.
+
+- id: skip_seeder_silently_if_ai_memory_unhealthy
+  summary: |
+    When ai-memory is unreachable at seeder-schedule time, log a warning and
+    return success so cluster bring-up continues. Hides a real outage of the
+    operational-knowledge store behind a healthy-looking controller.
+  related_invariants:
+    - ops_knowledge.seed_integrity
+  safe_alternative: |
+    Failing to seed because ai-memory is down is a finding, not a no-op.
+    Surface as doctor finding ops_knowledge.seed_missing; let the
+    workflow's retry policy reschedule until ai-memory recovers; do not
+    pretend the seed is in place.
+
+# ── VIP contamination (single-IP node identity) ──────────────────────────────
+
+- id: hardcode_node_to_pool_mapping_to_avoid_filter
+  summary: |
+    Maintain a hardcoded map of node-id → MinIO pool / etcd peer / DNS record
+    in the controller so the VIP-contaminated identity comparison can be
+    skipped. Replaces a structural fix with a per-cluster table the operator
+    must keep in sync.
+  related_invariants:
+    - node.identity.stable_ip
+  safe_alternative: |
+    Use node.StableIP(clusterVIP) when picking a single representative IP,
+    or the nodeAny<X> helpers when matching against ANY of node.Identity.Ips.
+    The node identity primitives ARE the right answer; callers must select
+    the correct one for their use case.
+
+- id: filter_out_vip_in_node_identity_ips
+  summary: |
+    Mutate node.Identity.Ips to remove the cluster VIP before publishing the
+    identity, so downstream code that reads Ips[0] never sees the VIP.
+    Destroys the multi-IP truth (NodeIdentity.Ips is supposed to be the full
+    list) to paper over consumers that picked the wrong helper.
+  related_invariants:
+    - node.identity.stable_ip
+  safe_alternative: |
+    NodeIdentity.Ips is the canonical full IP list and must not be filtered.
+    Fix the consumers: replace Ips[0] / PrimaryIP() with StableIP(clusterVIP)
+    or nodeAny<X>. The VIP is real and belongs in the identity; the
+    selection rule belongs in the caller.
+
+- id: special_case_keepalived_master_as_an_exception
+  summary: |
+    Branch every Ips-consuming code path on "is this node the keepalived
+    master?" and use different selection logic for the master. Doubles the
+    surface area and leaks keepalived state into every consumer.
+  related_invariants:
+    - node.identity.stable_ip
+  safe_alternative: |
+    One unified helper — StableIP(clusterVIP) — removes the VIP regardless
+    of which node holds it. No consumer needs to know about keepalived state;
+    the helper is the abstraction.
+
+- id: read_advertise_ip_without_falling_through_to_ips_list
+  summary: |
+    Use only n.GetIdentity().GetAdvertiseIp() and treat empty as "node has
+    no usable IP". Verified live 2026-05-10: the controller does not populate
+    AdvertiseIp on any node, so this path is always-empty and produces
+    false-positives (node not in pool → write_quorum_lost) or false-negatives
+    (skip check → real violations missed).
+  related_invariants:
+    - node.identity.stable_ip
+  safe_alternative: |
+    Prefer AdvertiseIp when non-empty, otherwise fall through to the
+    nodeAny<X> helpers that match against any of node.Identity.Ips with the
+    VIP excluded. Until the controller populates AdvertiseIp consistently,
+    AdvertiseIp-only reads produce wrong answers in real clusters.
+
+# ── cluster-controller objectstore-apply watcher ─────────────────────────────
+
+- id: swallow_compacted_error_silently
+  summary: |
+    On 'etcdserver: mvcc: required revision has been compacted' from the
+    objectstore-apply watcher, `continue` the loop and keep ranging over a
+    channel etcd will close on the next iteration. The goroutine exits;
+    nothing re-spawns it.
+  related_invariants:
+    - objectstore.topology_contract
+    - convergence.no_infinite_retry
+  safe_alternative: |
+    On any watch error OR channel-closed event, bounded-backoff sleep and
+    re-establish the Watch from the latest revision (Watch with
+    WithRev(currentRev+1) after re-reading the key). Log at WARN. Apply the
+    same pattern to every Watch-based goroutine in the controller.
+
+- id: skip_apply_request_processing_when_watch_died
+  summary: |
+    When the apply-watcher goroutine has died, leave queued apply_request
+    keys in etcd unprocessed and rely on a future controller restart to drain
+    them. This is the current bug — apply requests sit for hours until a
+    human notices and restarts the controller.
+  related_invariants:
+    - objectstore.topology_contract
+  safe_alternative: |
+    Re-establish the watch as described in the apply-watcher recovery
+    pattern. The drain-on-startup path is for cold start, not for missed
+    events — runtime recovery must not depend on operator restart.
+
+- id: require_human_to_restart_controller_for_every_apply
+  summary: |
+    Document "restart all controllers in sequence after every objectstore
+    apply" as the canonical operations procedure, instead of fixing the
+    watcher. Acceptable only as a temporary runbook entry; ossifying it as
+    the design is the forbidden fix.
+  related_invariants:
+    - objectstore.topology_contract
+    - convergence.no_infinite_retry
+  safe_alternative: |
+    Fix the watcher in code. The recovery runbook at
+    docs/operational-knowledge/runbooks/recover-stuck-topology-apply.yaml
+    exists as a transitional aid, not a permanent contract.
+
+# ── bootstrap flag lifecycle ─────────────────────────────────────────────────
+
+- id: silently_remove_flag_on_doctor_finding
+  summary: |
+    Have the doctor finding bootstrap.flag_persists_post_day_1 trigger an
+    automatic deletion of /var/lib/globular/bootstrap.enabled so the warning
+    clears. Hides a security regression behind a self-healing illusion and
+    masks crashes in the day-1 finalize path.
+  related_invariants:
+    - founding.quorum.three_nodes_required
+  safe_alternative: |
+    Day-1 finalize atomically clears the flag as its LAST step. On controller
+    startup, if day1_phase == ready AND flag present: log critical, refuse
+    loopback RPCs, emit the finding. Investigation is required — silent
+    auto-remediation of a security boundary is not.
+
+- id: widen_bootstrap_ttl_to_avoid_re_creation
+  summary: |
+    Extend the 30-minute bootstrap-flag TTL to hours or days so the flag
+    doesn't get re-created during slow joins. Trades a real-time security
+    boundary for cosmetic convenience.
+  related_invariants:
+    - founding.quorum.three_nodes_required
+  safe_alternative: |
+    The TTL is intentionally tight — bootstrap mode authorises unauthenticated
+    loopback RPCs and must close fast. Fix the slow path that recreates the
+    flag instead of widening the window. If a join truly needs > 30 min,
+    that's a separate failure mode to triage.
+
+# ── service endpoint resolution ──────────────────────────────────────────────
+
+- id: keep_env_var_as_fallback_for_dev_only
+  summary: |
+    Add `if os.Getenv("XYZ_ENDPOINT") != "" { return env }` "for dev only" so
+    local builds don't need etcd at startup. Ships per-node mutable
+    configuration into the same binary as production code paths and breaks
+    the etcd-is-sole-source-of-truth rule.
+  related_invariants:
+    - service.endpoint.etcd_address_reachability
+    - etcd.endpoint_reachability
+  safe_alternative: |
+    Local dev seeds an etcd instance via the same code path as production.
+    No os.Getenv() for cluster addresses anywhere; if etcd is unreachable
+    the service ERRORS instead of falling back.
+
+- id: silently_prefer_env_var_when_set
+  summary: |
+    When BOTH an env var and an etcd key are present for an endpoint, return
+    the env var without logging the divergence. Two nodes with identical
+    Globular config behave differently because one has the env var set, and
+    the difference is invisible until a user reports asymmetric behaviour.
+  related_invariants:
+    - service.endpoint.etcd_address_reachability
+  safe_alternative: |
+    There is no env var override — etcd is the only source. Service config
+    code does not consult the environment for cluster addresses. Period.
+
+- id: widen_to_other_env_vars_to_be_consistent
+  summary: |
+    Once one service uses os.Getenv() for its address, "for consistency" make
+    all the others do the same. Compounds a single rule violation into a
+    cluster-wide drift surface.
+  related_invariants:
+    - service.endpoint.etcd_address_reachability
+  safe_alternative: |
+    Consistency is achieved by removing every env-var fallback, not adding
+    more. There is one path: etcd. New services follow that pattern; the
+    existing offender is the bug to fix.
+
+- id: collapse_source_absent_into_critical_missing_evidence
+  summary: |
+    Treat "no source tree available to scan" — whether the cause is an
+    empty repoRoot, a missing bundle, an EPERM on a runtime dir, or a
+    non-git cwd — as if it were a critical-severity missing-evidence
+    finding (e.g. REQUIRED_TEST_MISSING, "0 Go files indexed critical",
+    "N gaps have missing tests"). It conflates "we couldn't check" with
+    "we checked and found nothing," and produces a wall of false alarms
+    every time awareness runs on a host without source — which is every
+    production MCP host. Three separate incidents in 2026-05 (62 fake
+    missing tests, 39 fake missing fix_case tests, 0% coverage critical)
+    all come from this shape.
+  related_invariants:
+    - awareness.source_scan_requires_verified_repo_root
+  safe_alternative: |
+    Use the typed sourceroot.Resolve primitive. Distinguish four states
+    — Found / Absent / Inaccessible / WrongContext — and only count
+    "Found + scanned + zero matches" as critical-missing-evidence.
+    Absent / Inaccessible / WrongContext are info-severity telemetry
+    signals: surface them as "telemetry unavailable, set
+    awareness.repo_path or run on a host with source," never as
+    critical findings about the codebase.
+
+- id: fall_back_to_cwd_when_git_root_unknown
+  summary: |
+    When `git rev-parse --show-toplevel` fails, fall back to
+    `os.Getwd()` and return the cwd as if it were the repo root. On a
+    production MCP host the cwd is the install dir (no source files),
+    which makes every subsequent scan return zero matches and produce
+    critical-severity REQUIRED_TEST_MISSING / 0% coverage findings.
+  related_invariants:
+    - awareness.source_scan_requires_verified_repo_root
+  safe_alternative: |
+    Return `sourceroot.Result{State: Absent}` (or "" from the legacy
+    helper). Callers then take the correct branch — UNVERIFIED, not
+    MISSING. If you genuinely need a writable working dir for some
+    other purpose, use `os.Getwd()` directly at that call site with a
+    different verb; do not paint it as "the repo root."
+
+- id: count_unverified_as_tests_not_found
+  summary: |
+    In a switch over verification status, let the `default` branch
+    capture both genuinely-missing tests AND
+    "couldn't-check"/"unverified"/"no-tests-required" entries, so all
+    of them get reported under one bucket. The operator sees "N gaps
+    have missing tests" when the actual condition is "we have no repo
+    source to scan."
+  related_invariants:
+    - awareness.source_scan_requires_verified_repo_root
+  safe_alternative: |
+    Enumerate every status explicitly. `tests_found`, `tests_partial`,
+    and `no_tests_required` are verified. `tests_not_found` is the
+    only real failure. `unverified` is its own info-severity signal.
+    `invalid_metadata` is a playbook-quality issue, not a missing
+    test. The `default` branch should panic on an unknown status so
+    a future addition to the status enum forces a conscious choice.
+
+- id: delete_desired_build_id_to_silence_install_storm
+  summary: |
+    When the controller install-storms against a build_id that the
+    repository can no longer resolve ("build_id X not found for
+    name=Y"), the operator deletes the ServiceDesiredVersion /
+    InfrastructureRelease row pinning build_id X to "clear the error".
+    The install loop stops, but desired state is now inconsistent
+    with the BOM and the orphaning continues silently — every later
+    cluster operation reads desired state and sees the wrong version.
+  related_invariants:
+    - repository.desired_build_id_must_resolve
+    - repository.purge_must_not_delete_active_desired_builds
+  safe_alternative: |
+    Repair the repository: run `globular repository repair-index
+    --from-all --dry-run` to identify reconstructable manifests; if
+    a manifest is genuinely lost, roll desired forward to a build_id
+    that exists (`globular services desired set <name> <new_version>`).
+    Desired-state edits are valid as forward rolls — never as silent
+    deletions to hide repository corruption.
+
+- id: relax_require_checksum_when_mirror_lookup_lacks_sha256
+  summary: |
+    When upstream mirror lookups fail with "require_checksum=true but
+    request has no sha256," the operator flips require_checksum off
+    in repository config to "make installs proceed." The cluster now
+    installs whatever bytes the mirror returns without verifying they
+    match the desired identity. This is the canonical wrong fix for
+    the build_id orphaning cascade — the missing manifest, not the
+    enforced checksum, is the actual bug.
+  related_invariants:
+    - repository.fallback_requires_manifest_and_checksum
+  safe_alternative: |
+    Leave require_checksum=true. If the upstream mirror genuinely
+    cannot provide sha256 in its responses, treat the mirror as
+    untrusted and configure trust policy to require local-only.
+    Repair the missing manifest with `repair-index` or roll the
+    desired build_id forward.
+
+- id: silent_fallback_to_latest_version_when_build_id_is_pinned
+  summary: |
+    The resolver returns "build_id not found" so the caller "helpfully"
+    falls back to ResolveArtifact with no build_id, picking up the
+    latest published build instead. The cluster silently installs the
+    wrong version everywhere; the pinned build_id in desired state
+    becomes a decorative annotation that nobody enforces.
+  related_invariants:
+    - repository.desired_build_id_must_resolve
+  safe_alternative: |
+    When a pinned build_id fails to resolve, surface the failure as
+    RELEASE_BLOCKED_REPOSITORY_ORPHANED_BUILD_ID. The controller
+    halts the release until either the repository is repaired or
+    desired state is explicitly rolled forward by an operator. No
+    silent version drift.
+
+- id: return_NotFound_for_yanked_revoked_or_archived_manifests
+  summary: |
+    resolveByBuildID returns codes.NotFound when the manifest exists
+    but its publish_state is YANKED/REVOKED/ARCHIVED/QUARANTINED.
+    The node-agent installer interprets NotFound as "build absent →
+    try local fallback," and installs a pinned tarball even though
+    the repository has explicitly demoted the build. The cluster ends
+    up running a build the repository said "stop on."
+  related_invariants:
+    - repository.desired_build_id_must_resolve
+    - repository.fallback_requires_manifest_and_checksum
+  safe_alternative: |
+    Return codes.FailedPrecondition with prefix DesiredBuildIdOrphaned
+    when the manifest exists but is not installable. Include the live
+    publish_state / artifact_state in the error message so the caller
+    (and doctor) can classify. Reserve NotFound for the case where the
+    manifest is genuinely absent from the catalog.
+
+- id: ignore_artifact_state_in_orphan_checks
+  summary: |
+    Remove or bypass the artifact_state check in resolveByBuildID / isRowInstallable
+    so that a row with publish_state=PUBLISHED is always treated as installable regardless
+    of artifact_state. This "fixes" the DesiredBuildIdOrphaned symptom by hiding the
+    split-state signal rather than repairing the underlying data inconsistency.
+  impact: |
+    A split-state row (publish_state=PUBLISHED, artifact_state=BLOB_VERIFIED) means the
+    publish pipeline completed only half the required write. Ignoring artifact_state
+    buries the mine deeper in the snow: the next failure shape that reads artifact_state
+    for a non-installability decision will fire on a corrupt row, and the audit trail
+    showing the state was split will be gone. The compound predicate exists because both
+    columns must agree — removing one leg of the check removes the agreement guarantee.
+  related_invariants:
+    - repository.artifact.installable_compound_predicate
+    - repository.desired_build_id_must_resolve
+  safe_alternative: |
+    1. Fix the write path: promoteToPublished MUST call transitionArtifactState(PipelinePublished)
+       so both columns are set atomically. If the artifact_state write failed, the artifact
+       stays in VERIFIED (not discoverable) until publish is retried.
+    2. Run backfillArtifactStates to repair any existing stuck BLOB_VERIFIED rows: it verifies
+       the blob is present, then drives the state machine forward to PipelinePublished.
+    3. Never remove the artifact_state check from isRowInstallable. The check costs nothing
+       and catches a class of broken rows that publish_state alone cannot distinguish.
+
+- id: ignore_artifact_state_in_doctor_index
+  summary: |
+    Use IsInstallableByPin (publish_state only) as the sole filter in
+    buildIDIndexFromManifests, allowing split-state build_ids to appear as
+    "resolvable" in RepositoryBuildIDIndex even though the resolver would reject them.
+    The doctor then stays silent on a desired pin that will generate an endless
+    DesiredBuildIdOrphaned error for every node that tries to install it.
+  impact: |
+    This is the current state as of 2026-05-15. The gap is architectural: ArtifactManifest
+    proto does not carry artifact_state, so buildIDIndexFromManifests cannot filter by it.
+    This is recorded as an OPEN GAP in invariant repository.artifact.installable_compound_predicate.
+    Do NOT work around this by adding a separate doctor-side heuristic that guesses whether
+    a build_id might be split-state — that doubles the maintenance surface.
+  related_invariants:
+    - repository.artifact.installable_compound_predicate
+  safe_alternative: |
+    Add artifact_state as a string field to ArtifactManifest proto. Populate it in
+    ListArtifacts from the Scylla artifact_state column. Update buildIDIndexFromManifests
+    to mirror isRowInstallable's two-column check. This makes the doctor's index agree
+    exactly with the resolver's installability decision for every row.
+
+- id: publish_dns_from_desired_or_profile_state
+  summary: |
+    Compute DNS records from Profile membership only — every node
+    with profile=gateway gets an entry in gateway.<domain> regardless
+    of whether the package is installed or the unit is running.
+    Clients hit dead endpoints on every TTL flip; new nodes appear in
+    DNS before they can serve traffic; nodes whose service crashed
+    silently stay in records until the next reconcile.
+  related_invariants:
+    - dns.records_must_be_installed_and_runtime_healthy
+  safe_alternative: |
+    Gate every service-bearing record by NodeInfo.ServiceReady which
+    consults InstalledServices (Layer 3) AND RuntimeHealthy (Layer 4)
+    before publication. Use ComputeDesiredStateWithFunnels and emit
+    WITHDREW log lines so the candidate funnel is visible.
+
+- id: rely_on_dns_to_recover_dns
+  summary: |
+    The DNS service itself is unhealthy on some nodes, so the operator
+    "fixes" it by editing dns.<domain> records to remove the bad
+    nodes. Now the DNS reconciler writes its own remediation back on
+    the next cycle because the records are computed from cluster
+    state, not from operator overrides. The records flap; clients see
+    both states in the same TTL window.
+  related_invariants:
+    - dns.records_must_be_installed_and_runtime_healthy
+  safe_alternative: |
+    Fix DNS at the source: reconciler gates dns.<domain> on the dns
+    service being installed AND healthy on each candidate. Bad nodes
+    drop out automatically. Do not edit records via the DNS RPC API
+    as a workaround for reconciler bugs — the reconciler is the
+    source of truth and will overwrite manual changes.
+
+- id: lower_dns_ttl_so_bad_resolutions_expire_faster
+  summary: |
+    A node's records keep pointing at a half-dead service, so the
+    operator lowers the TTL from 60s to 5s to "shorten the bad
+    window." Caching layers (resolver, OS, gRPC client connection
+    pool) still cache the bad answer for longer than the TTL; the
+    real bug — publishing the record at all — is unfixed; cluster-
+    wide query load multiplies.
+  related_invariants:
+    - dns.records_must_be_installed_and_runtime_healthy
+  safe_alternative: |
+    Gate publication on Installed + Runtime-healthy. Records for
+    unhealthy nodes never appear in the first place, so TTL becomes
+    a normal performance knob instead of a band-aid.
+
+- id: assume_installed_means_running
+  summary: |
+    A reconciler reads installed_state (Layer 3) and treats "installed"
+    as proof that the service is currently serving traffic. The
+    unit may be inactive (oom-killed, crashloop, never started). DNS
+    records computed from installed_state alone produce ghost records
+    for every unit that ever installed but isn't running right now.
+  related_invariants:
+    - dns.records_must_be_installed_and_runtime_healthy
+  safe_alternative: |
+    Always join Layer 3 with Layer 4 (systemd unit state) before
+    publishing anything that promises a live endpoint. Map each
+    package name to its systemd unit explicitly (dnsServiceUnitName);
+    `state == "active"` is the only proof of runtime health.
+
+- id: ignore_status_resolved_build_id_when_collecting_desired_roots
+  summary: |
+    collectDesiredBuildIDs scans only Spec.BuildID and forgets that
+    Status.ResolvedBuildID is also a live pin (the controller writes
+    it when resolving a version policy at dispatch time). The guard
+    blocks deletion of the SPEC build_id but happily archives the
+    RESOLVED one, breaking installs mid-rollout.
+  related_invariants:
+    - repository.purge_must_not_delete_active_desired_builds
+  safe_alternative: |
+    Collect BOTH Spec.BuildID and Status.ResolvedBuildID across all
+    four desired-state etcd prefixes. The reachability guard must
+    treat any pinned build_id — wherever pinned — as a hard root.
+
+- id: change_official_digest_to_accept_local_build
+  summary: |
+    A local build fails the official namespace seal because its digest
+    differs from the published artifact. Fix attempt: update the stored
+    digest in the ledger to match the incoming local bytes.
+    This destroys official immutability and lets any cluster silently
+    corrupt the official stable identity without detection.
+  related_invariants:
+    - package.official_identity_immutable
+  safe_alternative: |
+    Use a local identity lane: publish with publisher=local@<cluster-id>,
+    channel=DEV, version=1.2.43+local.<cluster>.1. The official artifact
+    remains unchanged. After validation, promote through the official
+    release pipeline with a new version.
+
+- id: strip_local_version_suffix_to_promote_without_official_rebuild
+  summary: |
+    A local build (version=1.2.43+local.ryzen.1) is validated and ready
+    for production. Shortcut: strip the suffix so it becomes 1.2.43 and
+    publish as core@globular.io/stable. Avoids the official release pipeline.
+    This re-introduces the identity fraud the local lane was designed to prevent:
+    two clusters now run different bytes under the same official identity.
+  related_invariants:
+    - package.promotion_must_use_official_release_pipeline
+    - package.official_identity_immutable
+  safe_alternative: |
+    Run the official build pipeline: clean checkout, official build tools,
+    new version (1.2.53), new build_id, new digest, GitHub release asset,
+    updated release-index.json. The local build is evidence/reference only.
+
+- id: allow_official_publisher_to_use_dev_channel
+  summary: |
+    An operator publishes a test build with publisher=core@globular.io
+    and channel=DEV to avoid changing the publisher. This pollutes the
+    official namespace with a non-authoritative build and could be confused
+    with a real official artifact by resolution logic.
+  related_invariants:
+    - package.local_publish_requires_local_identity
+  safe_alternative: |
+    Use publisher=local@<cluster-id> or org@<domain> for any DEV-channel
+    artifact. The official publisher is exclusively for STABLE channel releases
+    produced by the official release pipeline.
+
+- id: auto_accept_cross_cluster_local_artifact_as_official
+  summary: |
+    During cross-cluster sync, Cluster B's local build (local@cluster-b,
+    storage@1.2.43+local.cluster-b.1) is imported and the sync logic
+    promotes it to official stable to simplify the merge. The receiving
+    cluster's official desired state now points to non-official bytes.
+  related_invariants:
+    - package.remote_local_artifact_must_not_override_stable
+    - package.official_identity_immutable
+  safe_alternative: |
+    Cross-cluster sync must preserve publisher and channel fields.
+    Local/dev/hotfix artifacts may only be imported with explicit trust
+    policy or operator approval via `globular pkg override`. They must
+    never silently replace the receiving cluster's official desired state.

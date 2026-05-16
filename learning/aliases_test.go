@@ -87,7 +87,7 @@ func TestMatchAliasTargetsCaseInsensitive(t *testing.T) {
 
 func TestMatchAliasTargetsEnvoyFixtureTask(t *testing.T) {
 	// Load the real context_aliases.yaml fixture.
-	aliases, err := learning.LoadContextAliases("../../../docs/awareness/context_aliases.yaml")
+	aliases, err := learning.LoadContextAliases("../docs/awareness/context_aliases.yaml")
 	if err != nil {
 		t.Fatalf("LoadContextAliases: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestMatchAliasTargetsEnvoyFixtureTask(t *testing.T) {
 }
 
 func TestLoadLearningRules(t *testing.T) {
-	rules, err := learning.LoadLearningRules("../../../docs/awareness/learning_rules.yaml")
+	rules, err := learning.LoadLearningRules("../docs/awareness/learning_rules.yaml")
 	if err != nil {
 		t.Fatalf("LoadLearningRules: %v", err)
 	}

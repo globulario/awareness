@@ -1,0 +1,152 @@
+incident_id: INC-2026-0004
+title: "cluster-doctor: objectstore.write_quorum_lost and installed_state_runtime_mismatch false positives"
+status: RESOLVED
+severity: HIGH
+time_range:
+  from: "2026-05-16T04:00:00Z"
+  to: "2026-05-16T12:20:00Z"
+
+symptoms:
+  - "objectstore.write_quorum_lost CRITICAL firing on multiple nodes simultaneously"
+  - "Each doctor node reported itself as the ONLY active MinIO pool member"
+  - "globule-nuc:  active_nodes=10.0.0.8,  known_down=10.0.0.63,10.0.0.102,10.0.0.20,10.0.0.9"
+  - "globule-dell: active_nodes=10.0.0.20, known_down=10.0.0.63,10.0.0.102,10.0.0.8,10.0.0.9"
+  - "globule-lenovo: active_nodes=10.0.0.102, known_down=<all others>"
+  - "MinIO was actually fully healthy and CONVERGED on all 5 nodes — no real quorum loss"
+  - "installed_state_runtime_mismatch firing on all nodes for: rclone, restic, mc, sctool, etcdctl, ffmpeg, sha256sum, yt-dlp"
+  - "These are CLI tools with no systemd unit — no runtime mismatch was possible"
+
+observed_services:
+  - cluster-doctor
+  - minio
+
+root_cause: |
+  TWO independent bugs in cluster-doctor, both producing false positives.
+
+  ── BUG 1: objectstore.write_quorum_lost fired on partial snapshots ──────────
+
+  Each cluster-doctor instance builds its own snapshot independently (every 5s TTL).
+  When an instance fails to reach remote node-agents via GetInventory RPC, the
+  snapshot has DataIncomplete=true and remote nodes have no inventory entry.
+
+  The rule classified pool IPs with no NodeRecord (nodeID == "") as knownDownNodes.
+  The suppression guard only fires when DataIncomplete=true AND knownDownNodes is empty.
+  With unknown pool IPs going into knownDownNodes, the suppression never fired —
+  even when the reason was purely "snapshot is partial", not "MinIO is down".
+
+  The impossible pattern (each instance seeing only itself active) was the diagnostic
+  signal. A real quorum loss would show the same nodes down on ALL doctor instances.
+  When every instance sees a different set of "down" nodes (always the remote ones),
+  the snapshot is partial, not MinIO.
+
+  Additionally, minioServiceState() had two matching bugs:
+  - Unit name "globular-minio" (without ".service" suffix) was not matched →
+    returned "missing" → went to knownDownNodes instead of activeNodes.
+  - Unit state "running" (systemd SubState sometimes surfaced directly) was not
+    normalised to "active" → went to knownDownNodes.
+
+  ── BUG 2: COMMAND kind overwritten by stale INFRASTRUCTURE entry in etcd ────
+
+  When a package's kind was reclassified from INFRASTRUCTURE to COMMAND (introducing
+  the kind sidecar), the old INFRASTRUCTURE entry in etcd was never deleted. Both
+  entries coexisted:
+    /globular/nodes/{id}/packages/COMMAND/etcdctl      (new, correct)
+    /globular/nodes/{id}/packages/INFRASTRUCTURE/etcdctl  (stale, from prior install)
+
+  The collector builds the nodeKinds map by iterating etcd keys in lexicographic
+  order. "COMMAND" sorts before "INFRASTRUCTURE", so COMMAND was written first, then
+  INFRASTRUCTURE overwrote it. packageIsCommand() then saw INFRASTRUCTURE, returned
+  false, and the static fallback list was bypassed (only reached when no etcd entry
+  exists at all).
+
+  Affected packages: rclone, restic, mc, sctool, etcdctl, ffmpeg, sha256sum, yt-dlp.
+
+diagnosis_path: |
+  The key insight that broke the loopback-address hypothesis:
+  "each node sees itself as the only active node" is IMPOSSIBLE as a real cluster
+  state. If MinIO had genuinely lost quorum, all doctor instances would agree on
+  which nodes are down. When every instance disagrees and each sees only itself,
+  the divergence is in the observer (snapshot), not the observed (MinIO).
+
+  Steps that confirmed it:
+  1. Checked MinIO bind address — real IP (10.0.0.63:9000), not loopback. Not the bug.
+  2. Checked objectstore desired state in etcd — mode=distributed, 5 nodes, gen=2. Healthy.
+  3. Cross-referenced active_nodes evidence across 3 doctor instances → each saw only
+     its own IP. Impossible as real state.
+  4. Read objectstoreWriteQuorumLost.Evaluate() — nodeID=="" went to knownDownNodes,
+     suppression only fires when knownDownNodes is empty → suppression never fired.
+
+  For BUG 2:
+  1. Saw installed_state_runtime_mismatch for CLI binaries (no daemon possible).
+  2. packageIsCommand() has a static fallback — should have caught them.
+  3. Checked etcd: /globular/nodes/{id}/packages/ → found dual entries (COMMAND + INFRASTRUCTURE).
+  4. Traced the collector's kind map building → INFRASTRUCTURE overwrites COMMAND.
+
+fix_applied:
+  - description: >
+      objectstoreWriteQuorumLost.Evaluate: pool IPs with no NodeRecord (nodeID=="")
+      now go to noInventoryNodes, not knownDownNodes. Suppression fires correctly
+      when DataIncomplete=true and no confirmed-bad nodes.
+    files:
+      - golang/cluster_doctor/cluster_doctor_server/rules/objectstore_physical_overlap.go
+
+  - description: >
+      minioServiceState: strip ".service" suffix before matching unit name so both
+      "globular-minio.service" and "globular-minio" are recognised. Normalise
+      state "running" → "active" (systemd SubState surfaced directly).
+    files:
+      - golang/cluster_doctor/cluster_doctor_server/rules/objectstore_topology.go
+
+  - description: >
+      Added per-IP diagnostic evidence to objectstore.write_quorum_lost findings:
+      node_id_by_pool_ip, inventory_present_by_pool_ip, minio_state_by_pool_ip,
+      unit_names_by_pool_ip, data_incomplete, evaluator_node. Future false
+      positives will show the exact state per pool IP without further investigation.
+    files:
+      - golang/cluster_doctor/cluster_doctor_server/rules/objectstore_physical_overlap.go
+
+  - description: >
+      Added InventoryStalenessThreshold to Config. Inventories older than the
+      threshold are treated as uncertain (noInventory) rather than confirmed-down.
+    files:
+      - golang/cluster_doctor/cluster_doctor_server/rules/invariant.go
+      - golang/cluster_doctor/cluster_doctor_server/rules/objectstore_physical_overlap.go
+
+  - description: >
+      Collector nodeKinds map: once a package is classified as COMMAND, do not
+      overwrite it with any subsequent non-COMMAND entry. COMMAND wins.
+    files:
+      - golang/cluster_doctor/cluster_doctor_server/collector/collector.go
+
+  - description: "Rolled out new binary to all 5 cluster nodes"
+    via: ssh + systemctl
+
+commits:
+  - f916b934  # nodeID=="" → noInventoryNodes fix (partial snapshot suppression)
+  - 4531892a  # per-IP diagnostics, unit name/state normalisation, staleness threshold
+  - f67a1f1f  # COMMAND kind wins over stale INFRASTRUCTURE entry
+
+how_to_spot_quickly: |
+  objectstore.write_quorum_lost is a false positive when:
+  - Multiple doctor instances each report a DIFFERENT set of known_down nodes
+  - Each instance has active_nodes = only its own IP
+  - MinIO topology shows CONVERGED in etcd or via `globular objectstore topology status`
+  - data_incomplete=true in the finding evidence (after the fix)
+
+  installed_state_runtime_mismatch is a false positive for CLI tools when:
+  - The package has no globular-{name}.service unit (sctool, mc, etcdctl, etc.)
+  - The etcd kind path shows both COMMAND and INFRASTRUCTURE entries for the same package
+
+invariants_touched:
+  - objectstore.write_quorum_lost
+  - objectstore.minio.fingerprint_divergence
+  - installed_state_runtime_mismatch
+
+regression_tests_added:
+  - TestWriteQuorumLost_PartialSnapshot_LocalNodeOnly_Suppressed
+  - TestWriteQuorumLost_PartialSnapshot_LocalNodeOnly_DataComplete_Fires
+  - TestWriteQuorumLost_UnitStateRunning_TreatedAsActive
+  - TestWriteQuorumLost_UnitNameWithoutServiceSuffix_Matches
+  - TestWriteQuorumLost_DataComplete_PartialInventory_Fires
+  - TestWriteQuorumLost_StaleRemoteInventory_Suppressed
+  - TestWriteQuorumLost_StaleInventory_DataComplete_StillFires

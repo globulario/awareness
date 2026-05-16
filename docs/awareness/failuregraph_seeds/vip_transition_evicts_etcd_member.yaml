@@ -1,0 +1,65 @@
+id: ERRCAT-vip_transition_evicts_etcd_member
+type: ErrorCategory
+name: vip_transition_evicts_etcd_member
+severity: critical
+summary: >
+  Enabling or churning keepalived/VIP failover causes the controller's
+  removeStaleMembers loop to evict a healthy etcd member because the controller's
+  view of the node's IP momentarily reflects the floating VIP (10.0.0.100) instead
+  of the node's real IP. The desired-peer-URL set built from state then doesn't
+  match the actual member's peer URL, AND the hostname fallback fails when the
+  member name is the legacy bootstrap name (e.g. "globular-etcd") instead of the
+  sanitized hostname (e.g. "globule-ryzen").
+
+signatures:
+  - "etcd member-remove: removed stale member"
+  - "removed stale member globular-etcd"
+  - "the member has been permanently removed from the cluster"
+
+symptoms:
+  - id: SYM-etcd_member_disappears_during_vip_change
+    summary: "Healthy etcd member exits cleanly (status=0) right after a keepalived/VIP spec change"
+  - id: SYM-cli_cannot_reach_local_etcd
+    summary: "globular CLI fails with 'dial tcp <node>:2379: connect: connection refused' on the node whose etcd was evicted"
+  - id: SYM-placeholder_unstarted_member
+    summary: "etcdctl member list shows an unstarted member with the evicted node's peer URL but no name"
+
+causes:
+  - id: CAUSE-primaryip_returns_floating_vip
+    summary: >
+      controllerState.Node.PrimaryIP() can return the floating VIP when the node
+      currently holds it or recently held it. The DNS reconciler comment at
+      state.go:391 already documents this hazard. removeStaleMembers in
+      etcd_members.go:560-621 builds desiredPeerURLs from node.IP and falls back
+      to sanitized hostnames; both can miss the real member when state is polluted
+      or when the member name is the legacy bootstrap name.
+  - id: CAUSE-legacy_bootstrap_member_name_unmigrated
+    summary: >
+      First-installed nodes carry the bootstrap etcd member name ("globular-etcd")
+      and that name is never migrated to the sanitized hostname form. The
+      removeStaleMembers hostname fallback only matches sanitized hostnames, so
+      a legacy-named member is one bad IP away from eviction.
+
+resolutions:
+  - id: RES-rejoin_etcd_via_existing_placeholder
+    summary: >
+      Recovery without the join script: write etcd.yaml with name=<sanitized
+      hostname>, initial-cluster-state=existing, full member list. Start
+      globular-etcd.service. The unstarted placeholder member already in the
+      cluster will be claimed by the new etcd process; receive snapshot,
+      become follower.
+  - id: RES-rename_legacy_bootstrap_etcd_member
+    summary: >
+      Pre-emptive: rename the legacy "globular-etcd" member to its sanitized
+      hostname before any VIP/keepalived change. Hostname-fallback in
+      removeStaleMembers will then protect the member even when state.IP is
+      polluted.
+
+wrong_fixes:
+  - "Re-running the join script with --repair-etcd via a non-CA gateway (Phase 2.2 will fail at signing)"
+  - "Wiping the etcd data dir without first writing a correct etcd.yaml — leaves the placeholder member orphaned"
+
+tests:
+  - "etcd member list shows all 5 members in 'started' state with sanitized hostnames"
+  - "Forcing a VIP failover does not change the member-list output"
+  - "removeStaleMembers does not log 'removed stale member' when only the leader changes"

@@ -1,0 +1,1443 @@
+failure_modes:
+    - id: service.endpoint.port_squatting_cgroup_escape
+      title: Orphaned service process squats original port after cgroup escape, stale address in etcd blocks reconciliation
+      severity: critical
+      symptoms:
+        - service restarts but immediately reallocates to a different port (e.g., workflow moves from 10220 to 10221)
+        - etcd config for service shows new port (10221) but mesh/Envoy still routes to old port (10220)
+        - gRPC probe to old port gets a response but "Unimplemented unknown service X" — orphan is answering
+        - controller circuit breaker opens on workflow dispatch failures
+        - posture transitions to RECOVERY_ONLY and all new install workflows are blocked
+        - ss -lnt on node shows the old port still bound by a process not in the service cgroup
+        - systemctl status globular-workflow.service shows active but a different PID holds the old port
+      root_cause: |
+        When a service process exits uncleanly (e.g., SIGKILL or crash) without systemd catching it
+        (e.g., child fork, or process moved to a different cgroup before systemd could track it),
+        the process continues running and holds the original port. When systemd starts a new
+        instance (Restart=on-failure), the new process cannot bind the original port and
+        reallocates to a free port. The new address is written to etcd, but the mesh (Envoy/xDS)
+        may not yet be updated. The controller probes the orphan, gets a valid gRPC connection that
+        does NOT implement the expected service interface, and opens the circuit breaker.
+        With the circuit breaker open, posture goes RECOVERY_ONLY and all new install workflows
+        are blocked — making this a cluster-wide reconciliation stopper triggered by a single
+        runaway process.
+      architecture_fix: |
+        1. Add ExecStartPre=+/bin/sh -c 'pkill -9 -x <binary> || true' to every service unit file
+           (and its inline spec counterpart) so any orphan is killed before the new instance starts.
+           MUST use -x (process-name match) — never -f, which also matches the parent shell's argv
+           and self-SIGKILLs. For binary names >15 chars, use the bracket trick:
+           pkill -9 -f '[<first_char>]<rest>' instead.
+        2. The controller must scope circuit breaker effects: an open CB on workflow must block
+           only workflow-dependent dispatch, not ALL install workflows.
+        3. When a service re-registers a new address in etcd, the controller must probe the new
+           address with the correct gRPC service interface (not just TCP) before trusting it for
+           routing. A mismatch must trigger node-agent remediation (restart), not a global CB open.
+      forbidden_fixes:
+        - ignoring_orphan_processes_assuming_systemd_handles_them
+        - relying_on_service_restart_without_pkill_guard
+        - circuit_breaker_that_blocks_all_reconciliation_on_single_service_failure
+      related_invariants:
+        - service.endpoint.etcd_address_reachability
+        - service.endpoint.cgroup_escape_guard
+      related_services:
+        - workflow
+        - mcp
+        - cluster-controller
+      required_tests:
+        - TestWorkflowOrphanKilledBeforeRestart
+        - TestCircuitBreakerScopedToAffectedService
+    - id: service.desired_state.pipeline_gap
+      title: platform-upgrade omits ServiceDesiredVersion records during early bootstrap
+      severity: high
+      symptoms:
+        - services show 1/2 or 0/N in cluster status (installed on some nodes only)
+        - controller reconciler never dispatches install workflows for service packages
+        - ServiceDesiredVersion records missing from etcd for published service packages
+        - running "globular services desired set NAME VERSION" manually fixes the symptom per-service
+        - infra packages converge normally but workload services do not install
+      root_cause: |
+        platform-upgrade wrote ServiceDesiredVersion records via the gRPC UpsertDesiredService
+        RPC, which routes through Envoy on port 443. During early Day-0/Day-1 bootstrap the
+        mesh may not yet be routing, causing those calls to fail silently. Infrastructure
+        packages were unaffected because their path writes directly to etcd. The result is
+        that all service packages in the BOM have no desired state record and the controller
+        reconciler is entirely unaware of them.
+      architecture_fix: |
+        platform-upgrade must write ServiceDesiredVersion records directly to etcd
+        (key: /globular/resources/ServiceDesiredVersion/{name}) using the same approach
+        as updateInfraReleaseVersion. Direct etcd writes are mesh-independent and work
+        at any bootstrap phase. The controller reads these records from etcd on every
+        reconcile tick regardless of how they were written.
+      forbidden_fixes:
+        - manually_seeding_desired_state_per_node
+        - skipping_service_packages_from_bom
+        - writing_desired_state_via_grpc_only_during_bootstrap
+      related_invariants:
+        - service.desired_state.bom_completeness
+      related_services:
+        - cluster-controller
+        - globularcli
+      required_tests:
+        - TestPlatformUpgradeWritesServiceDesiredVersionWithoutMesh
+        - TestAllBOMPackagesHaveDesiredState
+    - id: release.failed.wave_succeeded_commit_error
+      title: ServiceRelease stays FAILED after wave succeeds when workflow commit RPC fails
+      severity: medium
+      symptoms:
+        - ServiceRelease phase is FAILED or DEGRADED
+        - message contains WAVE_BLOCKED ... note=RUN_STATUS_SUCCEEDED
+        - packages ARE installed on all nodes (etcd installed records present, checksums match)
+        - blocked_reason is workflow_unavailable or workflow_handler_missing
+        - no active workflow runs for affected releases
+        - health checks show version:X as ok but release status shows FAILED
+      root_cause: |
+        After a workflow wave completes successfully (packages installed on all nodes), the
+        workflow executor writes the final phase-commit RPC to the controller. If the workflow
+        service restarts, loses its gRPC connection, or reallocates its port at that exact
+        moment, the commit RPC fails. The ServiceRelease is left in FAILED/DEGRADED with
+        WAVE_BLOCKED message even though the packages are installed and correct. The reconciler
+        self-heals via signal #2 (node heartbeat reports correct installed version) but only
+        after the retry backoff expires and a no-op workflow verifies convergence.
+      architecture_fix: |
+        The reconciler already has a self_healed_converged path in reconcileFailed: when all
+        nodes report the desired version via heartbeat (signal #2 in hasUnservedNodes), the
+        release is re-entered as PENDING → workflow runs verify_installed → AVAILABLE.
+        No code change needed for self-heal. To reduce the recovery window, the retry backoff
+        can be shortened when desired_hash matches all installed checksums. Separately, the
+        workflow service must not reallocate its port mid-install (fix: ExecStartPre kill
+        guard before the new process starts).
+      forbidden_fixes:
+        - manually_patching_release_phase_to_available
+        - skipping_workflow_run_to_force_available
+        - marking_release_available_from_local_success
+      related_invariants:
+        - install.result.atomic_commit
+        - convergence.no_infinite_retry
+      related_services:
+        - cluster-controller
+        - workflow-service
+      required_tests:
+        - TestServiceReleaseRecoveryAfterWorkflowCommitFailure
+        - TestWaveBlockedSucceededSelfHeals
+    - id: install.desired_state.invisible_service
+      title: Service never installs on any node because ServiceDesiredVersion record is absent
+      severity: high
+      symptoms:
+        - service shows 0/N instances in cluster status
+        - no ServiceRelease record exists for the service
+        - no install workflows ever dispatched for the service
+        - cluster node full-status shows version check failing with "not installed (desired X)"
+        - repository has a published artifact for the service
+      root_cause: |
+        The controller reconciler only manages services that have a ServiceDesiredVersion
+        record in etcd. If that record is missing (never written by platform-upgrade, or
+        written via gRPC when the mesh was down, or never added to the BOM), the reconciler
+        is completely unaware of the service. Profile-aware dispatch and dependency ordering
+        are both irrelevant — the service is invisible at the Desired layer.
+      architecture_fix: |
+        Ensure ServiceDesiredVersion records are written as part of every publish and
+        platform-upgrade pipeline run. Use direct etcd writes (not gRPC) so bootstrap
+        timing cannot cause silent omissions. Doctor should detect published-but-undesired
+        services and emit a SEVERITY_WARN.
+      forbidden_fixes:
+        - manually_running_services_desired_set_per_service
+        - assuming_publish_implies_desired_state
+      related_invariants:
+        - service.desired_state.bom_completeness
+      related_services:
+        - cluster-controller
+        - repository
+        - globularcli
+      required_tests:
+        - TestPublishedServiceWithoutDesiredStateDetectedByDoctor
+    - id: install.result.partial_commit
+      title: Leader dies during install result promotion
+      severity: critical
+      symptoms:
+        - node-agent completed package install locally
+        - etcd installed-state missing
+        - reconciler dispatches same install repeatedly
+        - action result exists without promotion
+      root_cause: |
+        Installed-state, result promotion, and action cleanup were committed as separate etcd writes. Leader failover could leave partial state.
+      architecture_fix: |
+        Commit installed-state, result promotion, and action cleanup in one etcd transaction.
+      forbidden_fixes:
+        - retry_install_blindly
+        - clear_action_before_installed_state
+        - mark_release_available_from_local_success
+      related_invariants:
+        - install.result.atomic_commit
+        - convergence.no_infinite_retry
+      related_services:
+        - cluster-controller
+        - node-agent
+        - workflow-service
+      required_tests:
+        - TestLeaderFailoverDuringResultCommit
+        - TestPendingSyncRecovery
+    - id: objectstore.local_membership_inference
+      title: Node-agent infers MinIO membership from local disk
+      severity: critical
+      symptoms:
+        - MinIO starts on a node not in ObjectStoreDesiredState
+        - objectstore topology generation mismatch
+        - split-brain objectstore writes
+        - data loss on erasure-coded pool
+      root_cause: |
+        Node-agent checked local disk state (e.g., minio data directory exists) to decide whether to start MinIO, instead of reading ObjectStoreDesiredState from etcd.
+      architecture_fix: |
+        Node-agent must only start MinIO when the node is present in ObjectStoreDesiredState. Local disk state is irrelevant to membership.
+      forbidden_fixes:
+        - start_minio_from_local_health_check
+        - infer_minio_membership_from_disk
+      related_invariants:
+        - objectstore.topology_contract
+      related_services:
+        - node-agent
+        - repository
+      required_tests:
+        - TestMinioHeldWhenNodeNotInPool
+        - TestTopologyRenderParity
+    - id: deterministic.install.failure.retry_loop
+      title: Deterministic install failure causes infinite retry loop
+      severity: high
+      symptoms:
+        - same install action dispatched repeatedly
+        - action count for same package grows unbounded
+        - controller log flooded with same failure message
+        - cluster convergence never completes
+      root_cause: |
+        Reconciler treated a deterministic failure (e.g., artifact not found, checksum mismatch, wrong architecture) as transient and retried on every tick without classifying the failure or marking the action BLOCKED.
+      architecture_fix: |
+        Classify failures before retry: transient errors get bounded backoff, deterministic errors become BLOCKED and require input change to unblock.
+      forbidden_fixes:
+        - blind_reconcile_retry
+        - treating_all_failures_as_transient
+      related_invariants:
+        - convergence.no_infinite_retry
+      related_services:
+        - cluster-controller
+        - node-agent
+      required_tests:
+        - TestDeterministicFailureDoesNotRetryForever
+    - id: repository.minio.recovery_cycle
+      title: Repository and MinIO form a recovery deadlock
+      severity: critical
+      symptoms:
+        - node-agent cannot install packages during recovery
+        - repository reports MinIO unavailable
+        - MinIO cannot start because node-agent cannot install it
+      root_cause: |
+        node-agent depends on repository during package_install (required). repository depends on MinIO for blob reads (required). MinIO depends on node-agent to install its binary. This creates a required cycle during the recovery phase.
+      architecture_fix: |
+        Repository must be able to serve metadata without MinIO (metadata_first invariant). MinIO bootstrap must use a local BOM cache path. node-agent bootstrap must use local_bom_cache during recovery, not network repository.
+      forbidden_fixes:
+        - gate_metadata_reads_on_minio_health
+        - store_artifact_index_only_in_minio
+      related_invariants:
+        - repository.metadata_first
+        - objectstore.topology_contract
+      related_services:
+        - node-agent
+        - repository
+      required_tests:
+        - TestListArtifactsWhenMinIODown
+        - TestBootstrapRecoveryWithLocalBOMCache
+    - id: workflow.backend_unavailable
+      title: Workflow dispatched when backend is down
+      severity: high
+      symptoms:
+        - workflow records created with no executor
+        - workflow stays in RUNNING state forever
+        - action results never committed
+        - cluster state diverges from desired
+      root_cause: |
+        Workflow dispatch did not check backend (Scylla) health before creating the workflow record. Records written during Scylla instability may be orphaned if the write partially succeeds.
+      architecture_fix: |
+        Workflow dispatch must perform a health preflight check. If Scylla is degraded, dispatch must return an error and let the caller retry with backoff.
+      forbidden_fixes:
+        - dispatch_workflow_when_scylla_down
+        - ignore_backend_health_on_dispatch
+      related_invariants:
+        - workflow.backend_health_gate
+      related_services:
+        - workflow-service
+        - cluster-controller
+      required_tests:
+        - TestWorkflowDispatchRefusedWhenScyllaDown
+    - id: annotation_scanner_false_positive
+      title: Text-based annotation scanner flags string literal content as real annotations
+      severity: MEDIUM
+      intentional_gap: true
+      intentional_gap_reason: "Awareness-internal CI false-positive class, not a runtime concern. Architecture fix is a one-line WalkDir filter and the regression test (TestValidateAnnotationsSkipsTestFiles) prevents reoccurrence. A doctor rule would add ceremony without operational signal — this never reaches production behavior."
+      intentional_gap_review_after: "2026-08-10"
+      symptoms:
+        - awareness audit reports ERRORs from _test.go files, not production code
+        - 'Flagged lines are inside backtick string literals that embed intentionally-malformed //globular: patterns'
+        - CI gate exits 1 despite no real annotation defect
+      root_cause: |
+        ValidateAnnotations uses line-level text scanning (strings.Split + TrimSpace prefix check). Any line matching the //globular: prefix — even inside multi-line raw string literals — is treated as a real annotation. Test fixture files intentionally embed malformed annotation strings to exercise the validator, causing false-positive ERRORs from the package's own tests.
+      architecture_fix: |
+        Skip _test.go files in ValidateAnnotations, consistent with the goast extractor convention (production //globular: annotations are never written in test files). Single-line WalkDir filter change: !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go").
+      related_services:
+        - awareness/enforce
+      required_tests:
+        - TestValidateAnnotationsSkipsTestFiles
+    - id: scylla.critical_keyspace_under_replicated
+      title: Critical Scylla keyspace replication factor below policy
+      severity: critical
+      symptoms:
+        - Scylla keyspace RF=1 on multi-node cluster
+        - doctor emits scylla.keyspace.rf_policy_violation
+        - repair_required=true in schema guard status
+        - keyspace data at risk if any storage node fails
+      root_cause: |
+        Cluster storage node count increased but RF was not raised to match policy. Or ALTER TABLE failed silently.
+      architecture_fix: |
+        schema guard must detect RF < required, emit finding, publish repair_required, and enqueue repair action. Never auto-lower RF.
+      forbidden_fixes:
+        - auto_lower_replication_factor
+        - ignore_rf_violation_in_multi_node
+      related_invariants:
+        - scylla.critical_keyspace_replication_policy
+      related_services:
+        - cluster-controller
+        - scylladb
+      required_tests:
+        - TestRFPolicyEnforcedOn5NodeCluster
+        - TestRFPolicyAllowsRF1OnSingleNode
+    - id: desired.bootstrap_premature_convergence
+      title: Bootstrap state treated as authoritative desired state
+      severity: critical
+      symptoms:
+        - first-boot cluster marks convergence before promotion runs
+        - bootstrap records appear in installed-state as final
+        - node-agent installs from unvalidated seed data
+      root_cause: |
+        Desired-state records lacked source/authoritative fields. Controller promotion reconciler not implemented. Consumers treated any written record as final.
+      architecture_fix: |
+        Add source=bootstrap/authoritative=false fields. Require controller promotion pass before records are considered final. Consumers reject bootstrap records as non-final.
+      forbidden_fixes:
+        - treat_bootstrap_state_as_authoritative
+        - claim_convergence_from_bootstrap_records
+      related_invariants:
+        - desired.bootstrap_state_requires_promotion
+      related_services:
+        - cluster-controller
+        - node-agent
+      required_tests:
+        - TestBootstrapRecordIgnoredAsFinalByConsumers
+        - TestFirstBootClaimsConvergenceOnlyAfterPromotion
+    - id: critical_state.absent_key_interpreted_as_stop
+      title: Missing etcd key causes runtime shutdown
+      severity: critical
+      symptoms:
+        - keepalived/envoy/minio stops without explicit disable intent
+        - runtime shut down after etcd key deleted or expired
+        - no explicit_disabled=true in any spec
+      root_cause: |
+        Consumer interpreted missing key as a stop command rather than holding LKG. Absence == destructive intent was the implicit policy.
+      architecture_fix: |
+        Consumer policy must be missing/timeout/invalid => HOLD_LAST_KNOWN_GOOD. Only explicit valid disable spec may stop runtime.
+      forbidden_fixes:
+        - stop_runtime_on_missing_key
+        - delete_runtime_on_timeout
+        - treat_invalid_spec_as_disable_intent
+      related_invariants:
+        - critical_state.absence_is_not_destructive_intent
+      related_services:
+        - node-agent
+        - cluster-controller
+      required_tests:
+        - TestMissingKeyDoesNotStopRuntime
+    - id: runtime.lkg_corrupt_or_missing
+      title: Last-known-good state corrupt or absent causing service interruption
+      severity: high
+      symptoms:
+        - service restarts with empty config after etcd outage
+        - LKG file checksum mismatch detected on load
+        - service loses routing config during control-plane blip
+      root_cause: |
+        LKG write was not atomic (no tmp+fsync+rename), or generation guard was absent, or LKG was overwritten with invalid state.
+      architecture_fix: |
+        LKG write must be atomic. Checksum and monotonic generation validation required. Corrupt LKG must be rejected and prior valid state retained, not deleted.
+      forbidden_fixes:
+        - overwrite_lkg_with_invalid_state
+        - ignore_lkg_when_authority_unavailable
+        - accept_corrupt_lkg
+      related_invariants:
+        - runtime.last_known_good_required_for_critical_consumers
+      related_services:
+        - node-agent
+        - envoy
+        - minio
+      required_tests:
+        - TestCorruptLKGRejectedPriorStateRetained
+        - TestAtomicLKGWriteSurvivesRestart
+    - id: critical_state.unregistered_key_governance
+      title: Critical etcd key has no registered owner or policy
+      severity: high
+      symptoms:
+        - doctor detects missing key but no restoration occurs
+        - unknown writer overwrites critical key without rejection
+        - delete policy missing for class-A key
+      root_cause: |
+        Critical key not in config.CriticalEtcdKeys or critical_state_registry. No owner, schema, restore strategy, or delete approval policy defined.
+      architecture_fix: |
+        All critical keys must be in the registry with complete governance fields. Doctor iterates registry to detect missing/invalid/stale keys automatically.
+      forbidden_fixes:
+        - write_critical_key_without_registered_owner
+        - delete_critical_key_without_policy
+        - accept_unknown_writer_for_critical_state
+      related_invariants:
+        - critical_state.registry_ownership_required
+      related_services:
+        - cluster-controller
+        - cluster-doctor
+      required_tests:
+        - TestRegistryKeyHasCompletePolicy
+    - id: critical_state.accidental_key_deletion
+      title: Critical desired-state key deleted without approval
+      severity: critical
+      symptoms:
+        - ingress spec missing from etcd without any explicit operator action
+        - VIP stops floating without keepalived being intentionally disabled
+        - critical key disappears and is not auto-restored
+      root_cause: |
+        No delete-approval marker required. Any etcd client with write permission could delete the key, and the controller did not restore it on next cycle.
+      architecture_fix: |
+        Controller must restore missing critical keys unless a valid delete-approval marker exists with matching generation and leader identity.
+      forbidden_fixes:
+        - delete_desired_state_without_approval_marker
+        - treat_missing_key_as_delete_intent
+        - accept_stale_delete_approval
+      related_invariants:
+        - critical_state.deletion_requires_audited_intent
+      related_services:
+        - cluster-controller
+      required_tests:
+        - TestDeleteWithoutApprovalRestoresKey
+        - TestDeleteWithValidApprovalAccepted
+    - id: reconcile.lane_starvation
+      title: Blocked reconcile phase starves completion and critical publishers
+      severity: high
+      symptoms:
+        - ingress spec not republished despite new desired state
+        - release lane blocked behind stuck projection rebuild
+        - controller log shows lane "previous run still active"
+      root_cause: |
+        Reconcile lanes share a single goroutine or lock. One blocked phase (projection scan, Scylla slow query) prevents all other lanes from running.
+      architecture_fix: |
+        Isolated lane executors with per-lane timeout and independent "previous run active" tracking. Emergency lane always runnable.
+      forbidden_fixes:
+        - start_new_global_work_while_completion_is_blocked
+        - allow_reconcile_tick_to_starve_terminal_commit
+      related_invariants:
+        - reconcile.global_work_must_not_starve_completion
+      related_services:
+        - cluster-controller
+      required_tests:
+        - TestProjectionHangDoesNotBlockReleaseLane
+    - id: critical_queries.unbounded_hang
+      title: Unbounded query blocks critical reconcile loop
+      severity: high
+      symptoms:
+        - controller reconcile tick takes >60s
+        - DNS reconciler hangs on backend query
+        - watchdog fires because controller stops heartbeating
+      root_cause: |
+        Critical control-path query ran without context deadline. Scylla/etcd/DNS backend slow or unresponsive; query blocks indefinitely.
+      architecture_fix: |
+        All critical control-path queries must use bounded context with 5-15s deadline. Timeout must map to DEGRADED result category, not hang.
+      forbidden_fixes:
+        - run_unbounded_query_in_reconcile_path
+        - ignore_context_timeout_in_critical_query
+        - block_controller_loop_on_external_query
+      related_invariants:
+        - critical_queries.must_be_bounded
+      related_services:
+        - cluster-controller
+        - dns
+      required_tests:
+        - TestQueryTimeoutMappedToDegradedCategory
+    - id: derived_state.projection_blocks_authority
+      title: Projection failure prevents authoritative state publication
+      severity: high
+      intentional_gap: true
+      intentional_gap_reason: "Architecture fix has shipped (authority publishes first; projection failure only marks projection degraded) and TestProjectionScanHangAllowsIngressRepublish guards regression. A live doctor rule that watches projection-lane stuck while authority pending would be belt-and-suspenders, not load-bearing. Acknowledge the gap honestly until operational evidence shows we need the runtime signal."
+      intentional_gap_review_after: "2026-08-10"
+      symptoms:
+        - ingress spec not republished when projection scan is stuck
+        - objectstore config stale despite controller having fresh state
+        - repair workflow not dispatched because derived lane is blocked
+      root_cause: |
+        Authority publication was gated on derived/projection lane success. Projection failure propagated to authority lane as a blocking error.
+      architecture_fix: |
+        Authority lanes publish first each cycle. Projection failure marks projection degraded only, not authority.
+      forbidden_fixes:
+        - require_derived_state_before_publishing_authority
+        - block_authority_on_cache_availability
+      related_invariants:
+        - derived_state.must_not_block_authority
+      related_services:
+        - cluster-controller
+      required_tests:
+        - TestProjectionScanHangAllowsIngressRepublish
+    - id: recovery.dns_required_for_dns_recovery
+      title: DNS recovery requires working DNS — circular dependency
+      severity: high
+      symptoms:
+        - operator cannot run DNS repair CLI because DNS is down
+        - controller cannot reach nodes because DNS lookup fails during recovery
+        - 'cluster stuck: DNS broken, DNS repair needs DNS'
+      root_cause: |
+        CLI and controller used hostname resolution for all cluster operations. Direct IP fallback not implemented. DNS outage is self-referential.
+      architecture_fix: |
+        All resilience CLI commands must support --controller IP:port. Controller-to-node critical paths must prefer node IP from membership/state when DNS lookup fails.
+      forbidden_fixes:
+        - require_dns_for_dns_recovery
+        - require_service_discovery_when_discovery_is_unhealthy
+      related_invariants:
+        - recovery.must_not_depend_on_dns_only
+      related_services:
+        - dns
+        - cluster-controller
+      required_tests:
+        - TestIngressCLIWorksWithDNSDisabled
+    - id: destructive_actions.ambiguous_disable
+      title: Ambiguous or malformed disable spec stops runtime
+      severity: critical
+      symptoms:
+        - service stopped despite no operator intent
+        - disable spec missing reason or has stale generation
+        - IsExplicitDisable rejects spec but runtime stops anyway
+      root_cause: |
+        Destructive action guard not called on all code paths. Ambiguous disable (missing reason/generation/checksum) accepted as valid stop intent.
+      architecture_fix: |
+        Shared guard API (IsExplicitDisable) must be called before every destructive action. Rejected ambiguous disables must emit doctor finding. Rate-limited audit event for operator review.
+      forbidden_fixes:
+        - stop_runtime_from_ambiguous_disable
+        - wipe_state_without_approved_transition
+        - delete_runtime_data_from_ambiguous_state
+        - perform_destructive_action_from_inferred_intent
+      related_invariants:
+        - destructive_actions.require_explicit_guard
+      related_services:
+        - node-agent
+        - cluster-controller
+      required_tests:
+        - TestMalformedDisableDoesNotStopRuntime
+        - TestExplicitValidDisableStopsRuntimeAndAuditable
+    - id: topology.unsafe_drift_applied
+      title: Topology drift reconciler applies unsafe topology change
+      severity: critical
+      symptoms:
+        - storage node removed below quorum by drift reconciler
+        - MinIO erasure-coding pool loses redundancy without operator approval
+        - controller profile changed on node below founding quorum
+      root_cause: |
+        Drift reconciler applied topology change without calling topology safety preflight. Safety checks were only on the direct RPC path, not in the drift action planner.
+      architecture_fix: |
+        Topology preflight must be called in drift reconciler action planner for every topology/runtime change. Unsafe actions are blocked individually; other safe reconciles continue.
+      forbidden_fixes:
+        - infer_topology_from_local_disk
+        - reconcile_topology_without_contract
+        - apply_topology_drift_without_generation_check
+      related_invariants:
+        - topology.reconciler_must_respect_safety_contract
+      related_services:
+        - cluster-controller
+        - node-agent
+      required_tests:
+        - TestStaleMajorityTopologyRejectedWhileSafeActionsRun
+    - id: services.drift_never_escalates
+      title: Service drift warning stays at WARN indefinitely
+      severity: medium
+      symptoms:
+        - cluster.services.drift stuck at WARN for hours
+        - operator does not notice critical drift on ingress node
+        - drift becomes background noise
+      root_cause: |
+        Doctor rule had static SEVERITY_WARN for any desired/applied hash mismatch regardless of age. No driftSince tracking, no escalation.
+      architecture_fix: |
+        Track drift start timestamp per node in Collector. Escalate: <2min=WARN, >5min=ERROR, >5min on critical service=CRITICAL.
+      forbidden_fixes:
+        - keep_drift_warning_forever_without_escalation
+      related_invariants:
+        - services.drift_must_age_and_escalate
+      related_services:
+        - cluster-doctor
+      required_tests:
+        - TestDriftUnder2MinIsWarn
+        - TestDriftOver5MinIsError
+    - id: pki.ca_not_published
+      title: PKI CA metadata not published to etcd
+      severity: high
+      symptoms:
+        - pki.ca_not_published warning fires from doctor
+        - /globular/pki/ca absent from etcd
+        - no governance policy — key has no owner, no delete policy
+      root_cause: |
+        /globular/pki/ca not in config.CriticalEtcdKeys or critical_state_registry. Controller publishes it but no policy enforces restoration if deleted.
+      architecture_fix: |
+        Add /globular/pki/ca to CriticalEtcdKeys and critical_state_registry with owner=cluster-controller, RestoreFromState, DeleteNeverAutomatic.
+      forbidden_fixes:
+        - omit_pki_ca_from_critical_registry
+      related_invariants:
+        - pki.ca_metadata_must_be_published
+      related_services:
+        - cluster-controller
+        - cluster-doctor
+      required_tests:
+        - TestPKICANotPublishedFiresWhenCAMetadataNilAndNodesExist
+    - id: runtime.command_package_false_positive
+      title: Doctor flags COMMAND packages as missing systemd units
+      severity: medium
+      symptoms:
+        - installed_state_runtime_mismatch fires for yt-dlp, rclone, sha256sum, globular-cli
+        - doctor reports false-positive ERROR for packages with no daemon
+        - operator investigates non-existent systemd unit failure
+      root_cause: |
+        commandPackage() in the rule is a hardcoded list. New command packages added to catalog not in the list are incorrectly flagged.
+      architecture_fix: |
+        Query package kind from catalog (getCatalogEntry). COMMAND packages have no runtime unit expectation. Hardcoded list is tech debt until catalog integration complete.
+      forbidden_fixes:
+        - hardcode_command_package_runtime_expectations_forever
+        - require_systemd_unit_for_command_package
+        - ignore_package_kind_in_runtime_proof
+      related_invariants:
+        - runtime.installed_state_must_match_package_kind
+      related_services:
+        - cluster-doctor
+      required_tests:
+        - TestCommandPackageWithNoUnitProducesNoFinding
+    - id: mcp.orphan_port_hold
+      title: Orphaned mcp_server process holds port 10260, blocking service start
+      severity: high
+      symptoms:
+        - globular-mcp.service fails to start with 'address already in use' on :10260
+        - mcp retries port bind 10 times then exits with code 1
+        - systemctl start fails but no crashed service visible
+        - mcp_server process with PPid=1 (escaped cgroup) visible in ps
+        - INC-2026-0002 and INC-2026-0003
+      root_cause: |
+        A previous mcp_server instance escaped the systemd cgroup (PPid=1) during a
+        restart race or cgroup-misconfigured kill. It continues holding :10260 indefinitely.
+        When a new globular-mcp.service starts, all 10 bind retries fail and the service exits.
+      architecture_fix: |
+        Add ExecStartPre=+/bin/sh -c 'pkill -9 -x mcp_server || true' to globular-mcp.service
+        unit file. This kills any escaped orphan before attempting to bind the port. MUST use
+        -x (process-name match), never -f — -f matches the parent shell's argv and self-SIGKILLs.
+        Applied in packages/metadata/mcp/systemd/globular-mcp.service and
+        packages/metadata/mcp/specs/mcp_service.yaml as of INC-2026-0003.
+        Manual recovery: ssh to affected node and run: sudo killall -9 mcp_server
+      forbidden_fixes:
+        - restart_mcp_without_killing_orphan
+        - reduce_bind_retry_count_to_mask_orphan
+        - change_mcp_port_as_workaround
+      related_invariants:
+        - runtime.installed_state_not_liveness
+      related_services:
+        - mcp
+      required_tests:
+        - TestMCPStartFailsWhenOrphanHoldsPort
+        - TestExecStartPreKillsOrphan
+    - id: mcp.day1_install_no_start
+      title: mcp spec missing start_services step — Day-1 install does not start mcp
+      severity: medium
+      symptoms:
+        - mcp binary installed on joining node but globular-mcp.service is inactive
+        - no globular-mcp.service journal entries after install
+        - node-agent reports mcp in installed list but service is not running
+        - convergence result never emitted (WaitActive never reached)
+        - reconciler dispatches missing_package remediation for mcp repeatedly
+      root_cause: |
+        The mcp_service.yaml spec had no start_services or health_checks steps.
+        The spec comment said "Day-0 script starts all services together at the end."
+        For Day-1 joining nodes, there is no such script — the workflow must start the service.
+      architecture_fix: |
+        Add start_services and health_checks steps to mcp_service.yaml after enable_services.
+        Applied in packages/metadata/mcp/specs/mcp_service.yaml as of INC-2026-0003.
+        Any package spec that is installed on Day-1 joining nodes MUST have start_services
+        unless the service is intentionally deferred (document why if so).
+      forbidden_fixes:
+        - manually_start_mcp_without_fixing_spec
+        - skip_health_checks_to_avoid_waitactive_timeout
+      related_invariants:
+        - convergence.no_infinite_retry
+        - install.result.atomic_commit
+      related_services:
+        - mcp
+        - node-agent
+      required_tests:
+        - TestMCPStartedAfterDay1Install
+        - TestDay1SpecHasStartServicesStep
+    - id: objectstore.no_desired_state_governance
+      title: Objectstore desired state key has no registry governance
+      severity: critical
+      symptoms:
+        - objectstore.no_desired_state fires but controller does not restore
+        - node-agent infers MinIO topology from local disk when key absent
+        - /globular/objectstore/config absent — MinIO starts from stale local config
+      root_cause: |
+        /globular/objectstore/config not in config.CriticalEtcdKeys or critical_state_registry. No restoration policy, no delete approval required.
+      architecture_fix: |
+        Add /globular/objectstore/config to registry with owner=cluster-controller, RestoreFromState, DeleteNeverAutomatic. Node-agent must hold LKG and not infer topology.
+      forbidden_fixes:
+        - start_minio_without_objectstore_desired_state
+        - infer_objectstore_topology_from_local_state
+        - omit_objectstore_config_from_critical_registry
+      related_invariants:
+        - objectstore.desired_state_must_be_registry_governed
+      related_services:
+        - cluster-controller
+        - node-agent
+        - minio
+      required_tests:
+        - TestObjectstoreNoDesiredStateFiresWhenNilAndStorageNodes
+    - id: etcd.nospace_alarm
+      title: 'etcd NOSPACE alarm: database space exceeded — all writes rejected, control-plane cascade begins'
+      severity: critical
+      symptoms:
+        - '''mvcc: database space exceeded'' appears in etcd logs'
+        - etcd rejects all write RPCs with NOSPACE error
+        - etcd leader begins losing heartbeat quorum
+        - controller cannot renew leader lease
+        - workflow dispatch times out or hangs
+        - reconciler stalls — no desired-state changes applied
+      root_cause: |
+        etcd database grew beyond its configured quota (default 2 GiB). Common causes:
+        excessive revision history accumulation, write storm from a reconcile loop, or
+        compaction/defragmentation not running on schedule. Once the NOSPACE alarm fires,
+        etcd rejects ALL writes — including leader heartbeats — causing leader loss and a
+        cascading control-plane failure affecting controller, workflow, and reconciler.
+      architecture_fix: |
+        Fix order is strict — do not skip steps:
+        1. etcdctl alarm list   → confirm NOSPACE is active
+        2. REV=$(etcdctl endpoint status --write-out=json | jq -r '.[0].Status.header.revision')
+           etcdctl compact $REV → compact revision history
+        3. etcdctl defrag --endpoints=<all>  → release disk space
+        4. Verify disk usage dropped below quota
+        5. etcdctl alarm disarm   → ONLY after disk is below quota
+        6. etcdctl endpoint health → confirm all members healthy
+        7. etcdctl endpoint status --write-out=table → confirm stable leader
+        8. Watch controller logs for "acquired leader lease"
+        9. Watch workflow logs for successful dispatch
+      forbidden_fixes:
+        - etcd.disarm_before_compact
+        - etcd.restart_nodes_without_nospace_fix
+      related_invariants:
+        - etcd.must_not_exceed_quota
+      related_services:
+        - etcd
+        - cluster_controller
+        - workflow
+      required_tests:
+        - TestOfflineDiagnose_EtcdNOSPACE_MapsToEtcdFailureMode
+        - TestOfflineDiagnose_EtcdNOSPACE_DoesNotMapToObjectstore
+        - TestCausalChain_EtcdNOSPACE_ProducesControlPlaneCascade
+    - id: etcd.leader_instability
+      title: 'etcd leader instability: repeated leader loss caused by NOSPACE or disk I/O pressure'
+      severity: critical
+      symptoms:
+        - '''lost leader'' in etcd logs'
+        - '''elected leader'' appears repeatedly within short interval'
+        - etcd leader_id changes in etcdctl endpoint status output
+        - controller lease renewal fails during leader instability window
+        - no controller holds authoritative lease — reconciler stalls
+      root_cause: |
+        etcd leader cannot commit entries or send heartbeats when the NOSPACE alarm is
+        active (writes rejected) or when disk I/O latency exceeds the election timeout.
+        Repeated leader elections cascade: the controller cannot renew its etcd lease,
+        the lease expires, all controllers enter re-election, and no controller is
+        authoritative for the duration. Workflow dispatch RPCs time out.
+      architecture_fix: |
+        1. Resolve the upstream cause first (NOSPACE alarm or disk I/O pressure)
+        2. etcdctl endpoint status --write-out=table → watch leader_id until stable
+        3. Wait for no "lost leader" / "elected leader" messages for ≥60s
+        4. Only then look at controller/workflow — do not restart them during instability
+      forbidden_fixes:
+        - etcd.restart_nodes_without_nospace_fix
+        - controller.restart_before_etcd_stable
+      related_invariants:
+        - etcd.quorum_must_be_stable_before_controller_action
+      related_services:
+        - etcd
+        - cluster_controller
+      required_tests:
+        - TestOfflineDiagnose_EtcdLeaderLoss_MapsToEtcdLeaderInstability
+        - TestCausalChain_LeaderLoss_After_NOSPACE
+    - id: controller.lease_expired_due_to_etcd_instability
+      title: controller leader lease expired because etcd cannot commit writes during NOSPACE or leader instability
+      severity: high
+      symptoms:
+        - '''lease expired, attempting re-election'' in controller logs'
+        - no controller holds the leader lease — all controllers in re-election loop
+        - reconciler produces no changes to desired state
+        - workflow steps are not dispatched
+        - etcd shows concurrent write attempts from multiple controller instances
+      root_cause: |
+        The cluster controller renews its leader lease by writing to etcd. When etcd
+        cannot commit writes (NOSPACE alarm) or has no stable leader, lease renewal fails.
+        All controller instances detect lease expiry and attempt re-election simultaneously,
+        flooding etcd with new lease write attempts — which also fail if NOSPACE is still
+        active. The result is a re-election storm that continues until etcd is healthy.
+      architecture_fix: |
+        1. Verify etcd is healthy first: etcdctl alarm list (must be empty), etcdctl endpoint health (all healthy)
+        2. Watch controller logs for "acquired leader lease" — do not intervene before this
+        3. Do NOT restart controller processes before etcd is stable — restarts add more lease write load
+        4. If lease not acquired within 5 min after etcd stabilises, check for split-brain (two leaders)
+      forbidden_fixes:
+        - controller.restart_before_etcd_stable
+        - controller.kill_to_clear_lease_contention
+      related_invariants:
+        - etcd.quorum_must_be_stable_before_controller_action
+        - controller.single_leader_invariant
+      related_services:
+        - cluster_controller
+        - etcd
+      required_tests:
+        - TestOfflineDiagnose_ControllerLeaseExpired_MapsToCorrectFailureMode
+        - TestSuggestIncident_ControlPlaneCascade_EtcdFirst
+    - id: workflow.dispatch_timeout_due_to_control_plane_instability
+      title: workflow dispatch timeout — terminal symptom of upstream etcd or controller instability, not the root cause
+      severity: high
+      symptoms:
+        - '''context deadline exceeded dispatching workflow step'''
+        - '''workflow stuck at CONVERGING'''
+        - workflow runs remain in ACTIVE/CONVERGING state indefinitely
+        - no new workflow steps dispatched
+        - globular workflow list-runs shows blocked workflows piling up
+      root_cause: |
+        The workflow service dispatches steps by writing to etcd and coordinating with the
+        cluster controller. When etcd rejects writes (NOSPACE) or no controller holds the
+        leader lease, dispatch RPCs time out. This failure is always a symptom — the root
+        cause is upstream in etcd or the controller.
+        WARNING: Do not fix workflow before fixing etcd and controller.
+      architecture_fix: |
+        Fix order is strict:
+        1. Confirm etcd NOSPACE is cleared (alarm list empty, endpoint health all healthy)
+        2. Confirm controller has acquired leader lease (watch controller logs)
+        3. Workflow dispatch typically recovers automatically within 30-60s after controller stabilises
+        4. If workflows remain CONVERGING >5min post-stabilisation:
+           globular workflow list-runs --status blocked
+           → manually re-trigger or advance blocked workflows
+        NEVER restart workflow service before etcd and controller are stable.
+      forbidden_fixes:
+        - workflow.restart_before_control_plane_stable
+        - workflow.treat_as_root_cause
+      related_invariants:
+        - workflow.dispatch_requires_stable_control_plane
+      related_services:
+        - workflow
+        - cluster_controller
+        - etcd
+      required_tests:
+        - TestOfflineDiagnose_WorkflowTimeout_MapsToControlPlaneInstability
+        - TestSuggestIncident_FixOrder_EtcdBeforeWorkflow
+    - id: failure_mode.inc_2026_0002
+      title: MCP service orphaned processes hold port 10260, blocking WaitActive and install convergence
+      severity: HIGH
+      deprecated: true
+      deprecated_reason: "Incident-named placeholder. The same root cause and symptoms are captured by mcp.orphan_port_hold (proper-named, with the same architecture fix and forbidden_fixes). Keep this id only as a redirect so historical incidents that reference it still resolve."
+      replacement: mcp.orphan_port_hold
+      symptoms:
+        - globular-mcp.service stays in 'activating (start)' indefinitely, never reaching 'active (running)'
+        - systemd kills mcp_server after TimeoutStartSec (90s) with 'start operation timed out'
+        - 'New mcp_server instances fail to bind port 10260: ''address already in use'''
+        - Orphaned mcp_server processes survive systemd kills and hold port 10260
+        - node-agent WaitActive(30s) times out after install — marks install FAILED, installed state stays at old version
+        - 'node reports: day1_phase_reason = workloads not ready: mcp'
+        - 'Drift: desired=1.2.15, installed=1.2.14 persists despite artifact being downloaded and pinned'
+        - 'Manual intervention required: sudo killall -9 mcp_server'
+      root_cause: |
+        mcp_server declared Type=notify in its systemd unit but never called sd_notify("READY=1")
+        after binding the HTTP listener. systemd therefore held the service in 'activating' state
+        indefinitely and killed it after TimeoutStartSec (90s). With Restart=always/RestartSec=2,
+        a new instance started before the previous one fully released port 10260, accumulating
+        orphaned mcp_server processes (PPid=1, escaped cgroup) that each held the port.
+        node-agent's supervisor.WaitActive(30s) timed out waiting for 'active' state after
+        install, so installed-state in etcd was never updated — producing persistent version drift
+        even though the binary on disk was already replaced.
+      architecture_fix: |
+        Fix 1 (applied): Add sdNotifyReady(ctx) in serveHTTP() immediately after net.Listen
+        succeeds. Sends READY=1 to systemd via NOTIFY_SOCKET, then sends WATCHDOG=1 every 30s
+        (half of WatchdogSec=60). Also sends STOPPING=1 on ctx cancellation. File changed:
+        golang/mcp/transport_http.go. Deployed as mcp@1.2.15.
+
+        Fix 2 (recommended): Add ExecStartPre=+/bin/sh -c 'pkill -9 -x mcp_server || true'
+        to the globular-mcp.service unit as defence-in-depth against orphaned processes from
+        any future restart race, regardless of sd_notify status. MUST use -x (process-name
+        match), never -f — -f matches the parent shell's argv and self-SIGKILLs.
+      related_services:
+        - mcp
+        - node_agent
+      required_tests:
+        - TestMCPSdNotifySentAfterBind
+        - TestMCPServiceReachesActiveAfterRestart
+        - TestWaitActiveSucceedsWithNewBinary
+
+    - id: minio.version_drift_auth_failure
+      title: MinIO binary version differs across nodes causing auth failures
+      severity: critical
+      symptoms:
+        - MinIO requests fail with auth/signature errors on specific nodes only
+        - globular-minio.service active but ListBuckets returns 403 from affected node
+        - node heartbeat shows installed=1.x.y but process fingerprint matches older binary
+        - version drift persists across restarts because old binary survives in PATH
+      root_cause: |
+        A typo in the heartbeat phase-2 loop caused a node's installed MinIO version to go
+        undetected. The old binary was left on disk while etcd recorded the new version.
+        When requests were routed to the node with the old binary, MinIO's HMAC signature
+        verification failed against credentials issued for the new version. The mismatch was
+        invisible to the controller because heartbeat reported the etcd version, not the
+        on-disk binary fingerprint.
+      architecture_fix: |
+        Process fingerprinting: compute and cache a SHA-256 checksum of the binary at startup.
+        Heartbeat phase-2 compares the running checksum against the etcd artifact checksum
+        (entrypoint_checksum field). On mismatch, node transitions to NEEDS_REPAIR and triggers
+        a re-download rather than silently reporting the wrong version.
+      related_invariants:
+        - node.heartbeat.phase2_version_from_running_binary
+      related_services:
+        - minio
+        - node_agent
+      required_tests:
+        - TestHeartbeatDetectsChecksumMismatch
+        - TestMinIOVersionDriftTriggersRepair
+
+    - id: node_agent.state_poisoning_from_stale_reconciler
+      title: Node installs wrong version from stale reconciler after leader failover
+      severity: critical
+      symptoms:
+        - node installs version 0.0.1 or placeholder immediately after leader re-election
+        - etcd desired state shows current version but installed state regresses
+        - controller log shows new leader running reconciler against stale desired state snapshot
+        - downgrade guard fires but is overridden by force-install path
+      root_cause: |
+        After a leader failover, the new controller leader started its reconciler against an
+        in-memory desired state snapshot from the previous leader's session. The snapshot
+        contained a placeholder (0.0.1) for a package that had not yet been assigned a real
+        version. The reconciler installed the placeholder version, poisoning the node's installed
+        state. The downgrade guard was bypassed because the old leader's state was not fully
+        written to etcd before failover.
+      architecture_fix: |
+        Reconciler must load desired state exclusively from etcd at startup after acquiring
+        leadership — never from an in-memory snapshot from a prior leader session.
+        Unconditional downgrade guard: if desired version < installed version AND Force=false,
+        skip the install regardless of source. Only Force=true (explicit operator command) permits
+        downgrade. No automatic rollback ever.
+      related_invariants:
+        - controller.reconciler.no_downgrade_without_force
+        - controller.reconciler.desired_state_from_etcd_only
+      forbidden_fixes:
+        - auto_rollback_on_crash
+        - reconcile_from_in_memory_snapshot_after_failover
+      related_services:
+        - node_agent
+        - controller
+      required_tests:
+        - TestReconcilerNoDowngradeWithoutForce
+        - TestReconcilerLoadsDesiredStateFromEtcdOnLeaderElection
+
+    - id: xds.infra_preparing_loop_from_kind_mismatch
+      title: xds or gateway stuck in infra_preparing due to package kind classification conflict
+      severity: high
+      symptoms:
+        - xds or gateway DesiredService shows phase=infra_preparing indefinitely
+        - reconciler repeatedly re-attempts xds/gateway install with no progress
+        - install workflow completes SUCCEEDED but convergence never happens
+        - package kind in spec differs from package.json or catalog classification
+        - controller log shows "kind=service" but reconciler routes it as "kind=infrastructure"
+      root_cause: |
+        Package kind classification (infrastructure vs service) was duplicated across spec YAML,
+        package.json, and the catalog. When these disagreed, the reconciler applied the wrong
+        convergence logic: service-kind packages use a different readiness gate than
+        infrastructure-kind. xds and gateway are infrastructure but were classified as service in
+        one of the three sources, causing the readiness gate to never fire.
+      architecture_fix: |
+        Package kind must come from ONE canonical registry (package.json metadata). The spec YAML
+        and catalog must derive from this source, never independently classify. Add validation at
+        build time that asserts spec.kind == package.json.kind. Any disagreement is a build error,
+        not a runtime silent mismatch.
+      related_invariants:
+        - package.kind.single_canonical_source
+      forbidden_fixes:
+        - hardcode_kind_list_in_reconciler
+        - infer_kind_from_service_name
+      related_services:
+        - xds
+        - repository
+        - node_agent
+      required_tests:
+        - TestPackageKindFromCanonicalRegistry
+        - TestXDSConvergesAfterKindMismatchFixed
+
+    - id: ops_knowledge.seed_drift_post_install
+      title: An AI Memory entry with provenance.source=seed has content that no longer matches the awareness bundle's manifest hash
+      severity: warning
+      symptoms:
+        - "doctor finding ops_knowledge.seed_drift fires for one or more entry ids"
+        - "globular ops-knowledge verify reports drift between disk YAML and ai-memory rows"
+        - "AI sessions get inconsistent operational guidance from the seed (rare; usually noticed via doctor first)"
+      root_cause: |
+        Either:
+        1. A privileged caller bypassed the seeder principal and wrote a seed-tagged entry directly
+           (immutability layer broken or RBAC misconfigured), OR
+        2. The on-disk YAML at /var/lib/globular/operational-knowledge/ was modified post-install
+           without re-running the bundle install path (manual edit), OR
+        3. ScyllaDB row corruption (very rare; would also affect non-seed memories).
+      architecture_fix: |
+        Treat ai-memory as the canonical store and the bundle as the authoritative source. On
+        drift, trust the bundle: re-run the seeder workflow which upserts back to the bundle's
+        sha256. Investigate WHY the drift happened — usually a misconfigured CLI tool or a
+        bypassed RBAC check. ai-memory's immutability layer should be tested every release.
+      forbidden_fixes:
+        - allow_human_to_overwrite_seed_to_silence_finding
+        - increase_drift_threshold_to_hide_low_severity_drift
+      related_invariants:
+        - ops_knowledge.seed_integrity
+      related_services:
+        - ai-memory
+        - cluster-doctor
+        - awareness
+      required_tests:
+        - TestDoctorDetectsSeedDriftWithinOneCycle
+        - TestSeederUpsertHealsDrift
+
+    - id: ops_knowledge.unauthorized_seed_mutation
+      title: A non-seeder principal attempted (and was allowed) to UPDATE or DELETE an AI Memory entry tagged provenance.source=seed
+      severity: critical
+      symptoms:
+        - "audit log shows memory_update / memory_delete on a seed entry from a principal other than 'seeder'"
+        - "ai-memory write succeeded but the value diverges from the bundle manifest"
+      root_cause: |
+        The immutability check in ai-memory's Update/Delete handlers either was not implemented,
+        was bypassed by a debug/admin path, or the RBAC policy granted seed-write to too broad
+        a role (e.g., 'admin' instead of just 'seeder').
+
+        Critical because operational knowledge is the AI's source of truth for incident response.
+        A poisoned seed entry could cause future AI sessions to recommend wrong remediations.
+      architecture_fix: |
+        Reject all writes to entries with metadata.source = "seed" unless principal is exactly
+        "seeder". Log all such attempts at WARN level with principal id + entry id. Doctor
+        emits ops_knowledge.unauthorized_seed_mutation finding with severity=critical until
+        the next clean seeder run heals the entry.
+      forbidden_fixes:
+        - widen_seeder_role_to_admin
+        - silently_swallow_permission_denied_in_audit_log
+        - skip_immutability_check_for_test_environments     # tests should set up a 'seeder' service-account, not bypass
+      related_invariants:
+        - ops_knowledge.seed_integrity
+      related_services:
+        - ai-memory
+        - rbac
+      required_tests:
+        - TestAdminPrincipalCannotMutateSeed
+        - TestSeederPrincipalCanUpsertSeed
+        - TestUnauthorizedAttemptIsLoggedAndRejected
+
+    - id: ops_knowledge.seeder_workflow_skipped
+      title: AI Memory has zero seed-source entries even though the awareness bundle is installed and verified
+      severity: warning
+      symptoms:
+        - "globular memory query --tags seed returns empty"
+        - "doctor finding ops_knowledge.seed_missing fires"
+        - "fresh AI sessions have no operational baseline (Claude asks the same questions every session)"
+      root_cause: |
+        The day-1 seeder workflow either never ran or failed silently. Causes:
+        - ai-memory was unhealthy when the seeder workflow was scheduled and the workflow
+          gave up without retry
+        - the workflow was disabled or removed
+        - a release upgrade introduced new seed entries but the seeder didn't detect bundle
+          version change and skipped the upsert
+      architecture_fix: |
+        Seeder runs as a proper Workflow Service workflow with idempotent semantics, bounded
+        retry, and a terminal state (SUCCEEDED/FAILED). On every controller startup, check if
+        the bundle's seed_version differs from what's in ai-memory's metadata; if so, schedule
+        the seeder. Log success at INFO with entries-upserted count.
+      forbidden_fixes:
+        - run_seeder_inline_in_controller_startup_without_workflow_service
+        - skip_seeder_silently_if_ai_memory_unhealthy   # must surface as a finding instead
+      related_invariants:
+        - ops_knowledge.seed_integrity
+      related_services:
+        - workflow
+        - ai-memory
+        - cluster-controller
+      required_tests:
+        - TestSeederSchedulesOnBundleVersionChange
+        - TestSeederRetriesOnTransientAIMemoryFailure
+        - TestSeederTerminatesAfterMaxAttempts
+
+    - id: vip_contamination.node_routable_ip_returns_vip
+      title: Single-IP node identity reads cause VIP-contamination misclassification across multiple subsystems
+      severity: critical
+      symptoms:
+        - "an etcd member is wrongly evicted as 'stale' immediately after keepalived enable"
+        - "DNS per-node A records contain both the real IP and the VIP for every per-node FQDN"
+        - "MinIO publish filter excludes the VIP-holder from ObjectStoreDesiredState.Nodes (chicken-and-egg with MinioJoinPhase=non_member)"
+        - "publishGateway / publishController DNS records mix the VIP among gateway/controller node IPs"
+        - "cluster-doctor objectstore.write_quorum_lost CRITICAL active_drives=0 even when MinIO is healthy on every storage node (live mc admin info shows 3/3 drives Ok)"
+        - "cluster-doctor objectstore.minio.unapproved_path CRITICAL on every admitted disk after a topology apply that previously succeeded"
+        - "cluster-doctor objectstore.minio.active_on_non_member silently misses real violations (false-NEGATIVE — rule continues on empty IP rather than firing)"
+      root_cause: |
+        Two distinct failure mechanisms in the same class — both stem from reducing a multi-IP
+        node identity to a single IP for comparison against a curated stable IP list.
+
+        Mechanism A — first-IP-is-VIP:
+        node.Identity.Ips lists ALL the node's IPs. For the keepalived MASTER, the floating
+        VIP appears (typically as the first or among the first entries). Helpers that pick a
+        single representative IP — node.PrimaryIP(), node.Identity.Ips[0], nodeRoutableIP() —
+        return the VIP whenever the node holds it. Comparing that VIP against a stable-IP
+        pool list never matches.
+
+        Mechanism B — AdvertiseIp-is-empty:
+        NodeIdentity has a separate single-string field `AdvertiseIp` distinct from the
+        repeated `Ips` list. The controller does not currently populate AdvertiseIp (verified
+        live 2026-05-10 — empty on every node in a 5-node cluster). Consumers that compare
+        `n.GetIdentity().GetAdvertiseIp() == ip` get `"" == "10.0.0.x"` → false, which
+        either produces a false-positive ("node not in pool" → write_quorum_lost,
+        unapproved_path) OR a silent false-negative ("can't determine IP, skip" — real
+        violations missed in active_on_non_member).
+
+        Anything downstream that COMPARES that single representative IP against a curated,
+        stable IP list (etcd peer URLs, MinIO pool nodes, controller pool nodes, DNS
+        records, admitted disks, doctor invariants) fails to match — and treats the node as
+        unknown / stale / non-member / down.
+      architecture_fix: |
+        Three patterns work:
+        1. node.StableIP(clusterVIP) — explicitly excludes the cluster VIP. Use when picking
+           a single representative IP for publication / addressing.
+        2. nodeAny<X>(node, list) helpers — match against ANY of node.Identity.Ips. Use when
+           CHECKING membership in a stable list.
+        3. nodeIDByPoolIP(snap.Nodes, poolIPs) — bulk-build a poolIP→nodeID map by iterating
+           every node's full Identity.Ips list. Use when a rule needs to resolve multiple
+           pool IPs to nodeIDs in one pass.
+
+        Fixes landed:
+        - a4ea9ef1: etcd memberNode/dns/gateway paths via StableIP
+        - ead2bb94 (1.2.28): MinIO pool admission via nodeAnyIPInPool in minio_pools.go
+        - <next commit>: cluster-doctor's 5 sites (write_quorum_lost, format_heal_deadlock,
+          duplicate_physical_path, active_on_non_member, poolEndpoints) via
+          nodeIDByPoolIP / nodeHasIP helpers in node_ip_matching.go
+      forbidden_fixes:
+        - hardcode_node_to_pool_mapping_to_avoid_filter
+        - filter_out_vip_in_node_identity_ips             # the node legitimately HAS that IP; filter at the consumer instead
+        - special_case_keepalived_master_as_an_exception
+        - read_advertise_ip_without_falling_through_to_ips_list   # AdvertiseIp is empty in production; a fallback-less read is broken by definition
+      related_invariants:
+        - objectstore.topology_contract
+        - etcd.endpoint_reachability
+      related_services:
+        - cluster-controller
+        - cluster-doctor
+        - keepalived
+        - dns
+        - ai-memory
+      required_tests:
+        - TestMinioJoin_VIPHolder_MatchesByAnyIP
+        - TestEtcdMemberMatchAcceptsAnyOfNodeIps
+        - TestDNSReconcilerExcludesVIPFromPerNodeARecords
+        - TestPublishGatewayUsesStableIP
+        - TestNodeIDByPoolIP_MatchesByAnyIP
+        - TestNodeIDByPoolIP_EmptyAdvertiseIpDoesNotPoison
+        - TestWriteQuorumLost_VIPHolder_NotMisclassifiedAsDown
+        - TestWriteQuorumLost_VIPHolder_RealDowntimeStillFires
+
+    - id: cluster_controller.objectstore_apply_watcher_dies_silently
+      title: objectstore-apply-watcher exits its goroutine when etcd watch returns 'mvcc compacted'; not re-established
+      severity: critical
+      symptoms:
+        - "globular objectstore topology apply times out with 'timeout waiting for controller to process apply request'"
+        - "/globular/objectstore/topology/apply_request key exists in etcd but apply_result is empty"
+        - "controller log shows 'objectstore-apply-watcher: watch error: etcdserver: mvcc: required revision has been compacted' some time before the apply was attempted"
+        - "no 'objectstore-apply: processing request' log lines for hours after the watcher's last error"
+      root_cause: |
+        startObjectStoreApplyWatcher's loop handles ev.Err() with `continue`, then keeps
+        ranging over the same etcd Watch channel. Once etcd emits 'mvcc compacted', the
+        channel closes; the next select returns ok=false and the goroutine `return`s.
+        safeGo doesn't re-spawn it.
+
+        Because the drain on startup is the only other ingestion path, and drain only runs
+        for the leader, the only operational recovery is: restart all controllers in sequence
+        so a freshly-started controller wins the next election and drains the queued request.
+      architecture_fix: |
+        On any watch error or channel-closed event, sleep with bounded backoff and re-establish
+        the Watch from the latest revision (Watch with WithRev(currentRev+1) after re-reading
+        the key). Log at WARN. The same pattern likely exists in other Watch-based goroutines
+        in the controller — audit and fix together.
+
+        Until fixed in code, the recovery runbook is:
+        docs/operational-knowledge/runbooks/recover-stuck-topology-apply.yaml
+      forbidden_fixes:
+        - swallow_compacted_error_silently
+        - skip_apply_request_processing_when_watch_died        # this is the current bug
+        - require_human_to_restart_controller_for_every_apply  # only acceptable as a temporary workaround
+      related_invariants:
+        - objectstore.topology_contract
+        - convergence.no_infinite_retry
+      related_services:
+        - cluster-controller
+        - etcd
+      required_tests:
+        - TestApplyWatcherRecoversFromCompactedRevision
+        - TestApplyWatcherReestablishesWithLatestRev
+        - TestDrainOnStartupCatchesQueuedRequest
+
+    - id: bootstrap.flag_persists_post_day_1
+      title: /var/lib/globular/bootstrap.enabled flag found on a node after day-1 join completed — security regression
+      severity: critical
+      symptoms:
+        - "ls /var/lib/globular/bootstrap.enabled returns a file on a post-day-1 cluster"
+        - "loopback-only RPCs continue to bypass auth"
+        - "doctor finding bootstrap.flag_persists_post_day_1 fires"
+      root_cause: |
+        Bootstrap mode is gated by a flag file with a 30-min TTL. The day-1 join flow is
+        responsible for removing the flag once the cluster reaches founding quorum. If the
+        join completed but the flag wasn't cleaned up, the cluster is in a permanent
+        bootstrap-mode state — any localhost connection can perform unauthenticated mutations.
+
+        Causes observed:
+        - Crash in the day-1 finalize step before the cleanup ran
+        - Manual operator intervention that re-created the flag without intent
+        - Bug in the founding-quorum classifier that left day-1 in a partial state
+      architecture_fix: |
+        Day-1 finalize MUST atomically clear the bootstrap flag as the LAST step (after
+        founding quorum verified, after sa password changed, after CA rotated). On controller
+        startup, if day1_phase == ready AND bootstrap.enabled present, controller logs a
+        critical warning, refuses to accept loopback RPCs, and emits the doctor finding.
+      forbidden_fixes:
+        - silently_remove_flag_on_doctor_finding
+        - widen_bootstrap_ttl_to_avoid_re_creation
+      related_invariants:
+        - founding.quorum.three_nodes_required
+      related_services:
+        - cluster-controller
+        - node-agent
+      required_tests:
+        - TestDay1FinalizeClearsBootstrapFlag
+        - TestControllerRefusesLoopbackWhenFlagPersistsPostDay1
+
+    - id: service.endpoint.os_getenv_for_addresses
+      title: A service uses os.Getenv() to resolve a cluster address — bypasses etcd source-of-truth
+      severity: critical
+      symptoms:
+        - "service config code contains os.Getenv(\"...ENDPOINT...\") or similar"
+        - "service ignores etcd config when an env var is set"
+        - "behaviour differs across nodes due to local env var differences"
+      root_cause: |
+        A developer added an env-var fallback for "easier local testing" or to "avoid the
+        etcd dependency at startup". This violates the etcd-is-sole-source-of-truth rule:
+        env-var-driven config is per-node mutable, untracked, and breaks reproducibility.
+
+        Symptom that triggers detection: two nodes with identical Globular config behave
+        differently because one has an env var set.
+      architecture_fix: |
+        Remove the os.Getenv() call. Resolve from etcd via config.GetServiceConfigurationById
+        or similar. If etcd is unreachable, ERROR — do not fall back to defaults.
+
+        For local dev environments: use a local etcd seed via the same code path as production.
+      forbidden_fixes:
+        - keep_env_var_as_fallback_for_dev_only
+        - silently_prefer_env_var_when_set
+        - widen_to_other_env_vars_to_be_consistent
+      related_invariants:
+        - service.endpoint.etcd_address_reachability
+        - etcd.endpoint_reachability
+      related_services:
+        - "*"  # any service that resolves cluster addresses
+      required_tests:
+        - TestServiceConfigSourceIsAlwaysEtcd
+        - TestNoOsGetenvInServiceServerCode
+
+    - id: awareness.degraded_source_sentinel_collapsed_to_critical
+      title: Awareness source-availability sentinel is collapsed into a critical-severity missing-evidence finding
+      severity: critical
+      symptoms:
+        - "graph_integrity_check reports REQUIRED_TEST_MISSING (severity: critical) for tests that demonstrably exist in source"
+        - "coverage_report shows graph_coverage.status = critical with 0 eligible / 0 indexed Go files on a production MCP host"
+        - "health_pulse alerts 'N implemented gap(s) have missing tests' when verifyGapTests was actually returning unverified"
+        - "operator restarts MCP and finds it has 'opened (read-write): /var/lib/globular/awareness/graph.db' — a small writable shadow — even though /var/lib/globular/awareness/current/graph.db is installed and ~40 MB"
+        - "every awareness query from a production MCP host trips at least one critical alert about coverage or missing tests"
+      root_cause: |
+        Several awareness subsystems ask the same question — "is a real
+        source tree available to scan from this process?" — and each
+        invents its own degraded answer instead of using a typed primitive:
+
+          • awarGitRoot returns os.Getwd() on git rev-parse failure
+            (so the install dir gets scanned as if it were a repo).
+          • verifyGapTests returns the string "unverified" when repoRoot
+            is empty; the health_pulse consumer's switch collapses
+            everything-not-classified into tests_not_found.
+          • GoFileCoverage returns EligibleGoFilesTotal=0 with
+            ConfidenceImpact=unknown when repoRoot is empty; the
+            coverage_report consumer ignores ConfidenceImpact and uses
+            the percent directly, so 0% < 70% → critical.
+          • dbPath resolution prefers the bundle path if present and
+            falls back to a legacy writable path otherwise; there is
+            no symmetric handling for "bundle present but couldn't be
+            opened cleanly," and the legacy fallback is a stale 1.4 MB
+            shadow with ~300 nodes.
+
+        Each layer's unit tests run inside a git checkout where the
+        degraded path is never reached, so the conflation is invisible
+        until composed on a production host. The result an operator
+        sees is a wall of critical-severity alerts about graph
+        coverage and missing tests, all of which are pure telemetry
+        false positives. The system that's supposed to know its own
+        knowledge gaps is loudly lying about them.
+      architecture_fix: |
+        1. Introduce golang/awareness/sourceroot with a typed Result
+           returning Found(path) | Absent | Inaccessible(err) |
+           WrongContext(path, reason). No string sentinels. No silent
+           cwd fallback.
+        2. Migrate awarGitRoot to delegate to sourceroot.Resolve.
+        3. Each consumer switches on the typed state. Non-Found states
+           are telemetry-unavailable signals at info severity.
+        4. coverage_report adds a dedicated "unverified" status (was:
+           collapsed into "critical"). health_pulse already separated
+           "unverified" from "tests_not_found" in commit 1acd3fbb;
+           that fix is referenced here as the precedent.
+        5. Forbidden-fix entry
+           collapse_source_absent_into_critical_missing_evidence
+           prevents future PRs from re-introducing the conflation.
+      forbidden_fixes:
+        - collapse_source_absent_into_critical_missing_evidence
+        - fall_back_to_cwd_when_git_root_unknown
+        - count_unverified_as_tests_not_found
+      related_invariants:
+        - awareness.source_scan_requires_verified_repo_root
+        - awareness.no_match_is_not_safe
+      related_services:
+        - mcp
+        - awareness
+      required_tests:
+        - TestSourceRoot_NotInGitRepoReturnsAbsent
+        - TestSourceRoot_ExplicitPathInvalidReturnsInaccessible
+        - TestAwarGitRoot_NotInRepoReturnsEmpty
+        - TestVerifyGapTests_EmptyRepoRootReturnsUnverified
+        - TestCoverageReport_NoRepoRootIsUnverifiedNotCritical
+    - id: repository.desired_build_id_orphaned
+      title: package fetch returns NotFound for build_id referenced by desired state
+      severity: critical
+      symptoms:
+        - 'node-agent log: "build_id ... could not be resolved (repository unreachable)"'
+        - 'controller log: install workflows stuck in FAILED_TRANSIENT looping on the same build_id'
+        - 'doctor finding: repository.desired_build_ids_resolve fails for one or more services'
+        - install-storm against the repository (NotFound on every retry) without convergence
+        - DesiredService rows pin build_id=X, repository.ListArtifacts shows no entry for build_id=X
+        - new nodes hitting cold start cannot reach Applied — Layer 3 stays empty forever
+      root_cause: |
+        Repository metadata / Scylla index rows for a build_id were deleted while
+        desired state (ServiceDesiredVersion, InfrastructureRelease, ServiceRelease,
+        DesiredService) still pinned the immutable build_id. Once the index loses
+        the entry, ResolveArtifact returns NotFound, the fallback paths (POSIX CAS,
+        GitHub mirror, MinIO mirror) demand a sha256 they cannot synthesize without
+        the manifest, and the install-storm begins. The original incident was
+        triggered by a node-removal workflow ("N etcd keys cleaned, M releases
+        purged") that cascaded into a repository purge with no reference-safety
+        check against desired state.
+      architecture_fix: |
+        1. collectDesiredBuildIDs in golang/repository/repository_server/reachability_guard.go
+           must scan ALL four desired-state etcd prefixes:
+             /globular/resources/ServiceDesiredVersion/
+             /globular/resources/InfrastructureRelease/
+             /globular/resources/DesiredService/
+             /globular/resources/ServiceRelease/
+           and accept BOTH Spec.BuildID and Status.ResolvedBuildID.
+        2. checkDeletionSafety + checkRevokeSafety must consult both installed AND
+           desired build_id sets; block deletion with a stable PurgeBlockedReason
+           code (RepositoryPurgeBlockedReferencedBuild_desired) and an audit event.
+        3. resolveByBuildID must distinguish three outcomes — success, NotFound
+           (manifest absent), and DesiredBuildIdOrphaned/FailedPrecondition
+           (manifest exists but demoted). Conflating the last two is what produced
+           the install-storm.
+        4. node-agent fallback path must check the error sentinel: ErrBuildIDOrphaned
+           and ErrBuildIDNotFound BOTH forbid local-pinned-tarball fallback
+           (CannotFallbackWithoutManifestOrChecksum); only ErrRepositoryUnreachable
+           permits it.
+        5. Doctor invariant repository.desired_build_ids_resolve fires whenever an
+           active desired build_id is not represented by any node's installed
+           build_id set — surfaces the orphan before the install-storm kicks in.
+      forbidden_fixes:
+        - change_desired_version_or_build_id_by_hand_to_clear_error
+        - disable_require_checksum_to_allow_unverifiable_fallback
+        - manually_copy_package_blobs_without_index_repair
+        - restart_node_agent_repeatedly_hoping_repository_recovers
+        - delete_desired_build_id_to_silence_install_storm
+        - relax_require_checksum_when_mirror_lookup_lacks_sha256
+      related_invariants:
+        - repository.purge_must_not_delete_active_desired_builds
+        - repository.desired_build_id_must_resolve
+        - repository.fallback_requires_manifest_and_checksum
+      related_services:
+        - repository
+        - cluster-controller
+        - node-agent
+        - cluster-doctor
+      required_tests:
+        - TestDeletionSafety_DesiredBuildID_IsBlocked
+        - TestRevokeSafety_DesiredBuildID_IsBlocked
+        - TestCollectDesiredBuildIDs_ScansAllFourPrefixes
+        - TestResolveByBuildIDOrphaned_ReturnsFailedPrecondition
+        - TestInstallerRefusesLocalFallbackOnOrphaned
+        - TestDoctorRule_RepositoryDesiredBuildIDsResolve
+    - id: dns.desired_ghost_records
+      title: DNS records point to nodes where service is planned, inactive, or not installed
+      severity: high
+      symptoms:
+        - gateway.<domain>, api.<domain>, *.<domain>, dns.<domain> resolve to IPs whose owning node has the service "planned" or "inactive"
+        - client gRPC dials oscillate between success and TCP refused as the TTL flips between healthy and dead candidates
+        - _cluster-controller._tcp.<domain> SRV record contains nodes whose globular-cluster-controller.service is inactive or missing
+        - DNS reconciler log shows record-write loops without any "WITHDREW" lines despite stuck installs
+        - new node added to cluster appears in DNS records before its packages are installed
+      root_cause: |
+        The DNS reconciler in golang/cluster_controller/cluster_controller_server/dns_state.go
+        computed candidates from Profile (Layer 2 / Desired) alone — `node.HasProfile("gateway")`,
+        `node.HasProfile("control-plane")`, etc. It did NOT consult per-node
+        InstalledVersions (Layer 3) or systemd unit state (Layer 4) before
+        emitting A / SRV records. As a result, a node that was planned to run
+        gateway but hadn't completed installation, or whose gateway unit had
+        gone inactive, still appeared in gateway.<domain>. Clients then
+        load-balanced into a dead endpoint for each TTL.
+      architecture_fix: |
+        1. NodeInfo carries explicit readiness inputs: InstalledServices map
+           (Layer 3) and RuntimeHealthy map (Layer 4), plus Draining/Quarantined
+           lifecycle flags.
+        2. ComputeDesiredStateWithFunnels applies a gateForService funnel for
+           every record group that promises a service:
+              Desired (profile) → Installed → Runtime healthy → Published
+           A record is emitted ONLY when all three layers agree.
+        3. Per-node A/AAAA records (which describe the NODE, not a service) are
+           withdrawn when Draining/Quarantined.
+        4. The reconciler logs structured WITHDREW lines per record group so
+           operators can see the funnel and reason about ghost-record withdrawal.
+        5. Doctor invariant dns.records_match_runtime_health fires when any node
+           with a record-bearing profile has the corresponding service planned
+           but not installed, or installed but runtime-unhealthy — surfaces a
+           reconciler bug or an unpatched DNS server before clients notice.
+      forbidden_fixes:
+        - lower_dns_ttl_so_bad_resolutions_expire_faster
+        - restart_dns_only_to_force_record_refresh
+        - hardcode_known_good_nodes_in_dns_config
+        - remove_profile_from_node_to_hide_record
+        - publish_dns_from_desired_or_profile_state
+        - rely_on_dns_to_recover_dns
+      related_invariants:
+        - dns.records_must_be_installed_and_runtime_healthy
+        - dns.wildcard_must_not_include_unhealthy_nodes
+      related_services:
+        - cluster-controller
+        - dns
+        - gateway
+        - cluster-doctor
+      required_tests:
+        - TestComputeDesiredState_PlannedNotInstalled_NoRecord
+        - TestComputeDesiredState_InstalledNotHealthy_NoRecord
+        - TestComputeDesiredState_HealthyNode_PublishesRecord
+        - TestComputeDesiredState_DrainingNode_WithdrawsRecords
+        - TestComputeDesiredState_WildcardExcludesUnhealthy
+        - TestComputeDesiredState_ControllerSRVOnlyHealthy
+        - TestDoctorRule_DNSRecordsMatchRuntimeHealth

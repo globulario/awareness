@@ -1,0 +1,147 @@
+aliases:
+  infra.desired_hash_consistency:
+    - desired hash mismatch
+    - checksum mismatch
+    - drift loop
+    - install loop
+    - raw artifact digest
+    - ComputeInfrastructureDesiredHash
+    - ResolvedArtifactDigest
+    - desired_hash
+    - hash convergence
+
+  service.restart_singleflight:
+    - restart storm
+    - SIGTERM storm
+    - start-limit-hit
+    - repeated restart
+    - restart loop
+    - start limit
+
+  infra.heartbeat_not_desired_authority:
+    - heartbeat created release
+    - ManagedInstalled created InfrastructureRelease
+    - runtime promoted to desired
+    - heartbeat authority
+    - discovered runtime
+
+  convergence.no_infinite_retry:
+    - retry loop
+    - infinite retry
+    - deterministic failure
+    - reconcile storm
+    - repeated dispatch
+
+  install.result.atomic_commit:
+    - partial commit
+    - atomic install
+    - install result missing
+    - etcd transaction
+    - installed-state missing
+
+  scylla.critical_keyspace_replication_policy:
+    - scylla keyspace RF below policy
+    - replication factor too low
+    - alter replication factor
+    - keyspace under-replicated
+    - RF=1 on multi-node
+
+  desired.bootstrap_state_requires_promotion:
+    - bootstrap became desired
+    - seed state promoted
+    - bootstrap state authoritative
+    - first boot claimed convergence too early
+    - authoritative=false
+
+  critical_state.absence_is_not_destructive_intent:
+    - missing key stopped service
+    - absent key disabled runtime
+    - delete key caused shutdown
+    - timeout treated as disable
+    - invalid spec stopped service
+    - missing key disable
+    - missing etcd key stopped
+    - absence not treated as intent
+    - keepalived disabled by absent
+
+  runtime.last_known_good_required_for_critical_consumers:
+    - LKG
+    - last known good
+    - etcd outage should keep service running
+    - corrupt LKG
+    - hold last valid config
+
+  critical_state.registry_ownership_required:
+    - critical key registry
+    - missing owner
+    - unknown writer
+    - schema mismatch
+    - delete policy missing
+
+  critical_state.deletion_requires_audited_intent:
+    - delete without approval
+    - key deletion audited
+    - tombstone intent
+    - delete approval marker
+    - generation mismatch delete
+
+  reconcile.global_work_must_not_starve_completion:
+    - reconcile starvation
+    - blocked reconcile lane
+    - projection starves release
+    - lane timeout
+
+  critical_queries.must_be_bounded:
+    - query hung forever
+    - unbounded scan
+    - critical query timeout
+    - no context timeout
+    - blocked reconciliation query
+
+  derived_state.must_not_block_authority:
+    - projection blocks authority
+    - derived state gates authority
+    - projection failure stops publish
+
+  recovery.must_not_depend_on_dns_only:
+    - DNS unavailable recovery
+    - recovery without DNS
+    - direct IP fallback
+    - DNS down cluster recovery
+
+  destructive_actions.require_explicit_guard:
+    - wipe without approval
+    - ambiguous disable
+    - destructive without guard
+    - stop service no intent
+
+  topology.reconciler_must_respect_safety_contract:
+    - topology drift unsafe
+    - drift removed storage node below quorum
+    - topology safety gate
+    - drift reconciler unsafe
+
+  services.drift_must_age_and_escalate:
+    - drift warning forever
+    - drift not escalating
+    - stale drift background noise
+
+  pki.ca_metadata_must_be_published:
+    - pki.ca_not_published
+    - CA metadata missing
+    - /globular/pki/ca missing
+    - cluster CA not published
+
+  runtime.installed_state_must_match_package_kind:
+    - command package flagged as missing unit
+    - installed_state_runtime_mismatch
+    - doctor false positive command package
+    - package kind runtime proof
+    - COMMAND package missing systemd unit
+    - flagged as missing systemd unit
+
+  objectstore.desired_state_must_be_registry_governed:
+    - objectstore.no_desired_state
+    - /globular/objectstore/config missing
+    - MinIO topology missing
+    - node-agent inferred objectstore topology

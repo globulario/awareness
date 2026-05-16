@@ -7760,7 +7760,7 @@ const file_workflow_proto_rawDesc = "" +
 	"\x11workflow.dispatch\x12\x05write\"\x15/workflow/defer-state*\boperator2\xae\x01\n" +
 	"\x14WorkflowActorService\x12\x95\x01\n" +
 	"\rExecuteAction\x12\x1e.workflow.ExecuteActionRequest\x1a\x1f.workflow.ExecuteActionResponse\"C\x82\xb5\x18?\n" +
-	"\x0eworkflow.admin\x12\x05write\x1a\x1f/workflow/actor/{actor}/actions*\x05adminB;Z9github.com/globulario/awareness/workflowpbb\x06proto3"
+	"\x0eworkflow.admin\x12\x05write\x1a\x1f/workflow/actor/{actor}/actions*\x05adminB,Z*github.com/globulario/awareness/workflowpbb\x06proto3"
 
 var (
 	file_workflow_proto_rawDescOnce sync.Once

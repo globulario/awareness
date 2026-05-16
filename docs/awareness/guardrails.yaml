@@ -1,0 +1,132 @@
+guardrails:
+  - id: config_ownership
+    title: Package install may seed defaults only if missing. Live config is owned by controller/node-agent/workflow/identity.
+    priority: P1
+    status: PARTIAL
+    category: configuration
+    target_invariants:
+      - install.result.atomic_commit
+    required_fixes:
+      - config_seed_protection
+    summary: 1A done, 1B (full ownership audit) future.
+
+  - id: join_script_safety
+    title: Day-1 joins existing truth. It does not invent local truth.
+    priority: P1
+    status: DONE
+    category: day1
+    target_invariants:
+      - convergence.no_infinite_retry
+    required_fixes:
+      - join_script_safety
+    summary: Complete 2026-05-03, 20 tests pass.
+
+  - id: infra_drift
+    title: AVAILABLE is not a memory. AVAILABLE must remain true.
+    priority: P1
+    status: DONE
+    category: infrastructure
+    target_invariants:
+      - runtime.installed_state_not_liveness
+    required_fixes:
+      - infra_drift_detection
+    summary: Complete 2026-05-03, 15 components.
+
+  - id: desired_hash_identity
+    title: Infrastructure convergence must use canonical DesiredHash throughout.
+    priority: P0
+    status: PARTIAL
+    category: convergence
+    target_invariants:
+      - infra.desired_hash_consistency
+    required_fixes:
+      - desired_hash_consistency
+    summary: Identified 2026-05-06; fix cases written, not yet implemented.
+
+  - id: critical_state_absence_guard
+    title: Missing control-plane key must never stop or delete runtime
+    priority: P0
+    status: DONE
+    category: safety
+    target_invariants:
+      - critical_state.absence_is_not_destructive_intent
+    required_fixes:
+      - absence_as_destructive_intent
+    summary: Done for ingress 2026-05-04. Objectstore/envoy/dns rollout is FUTURE.
+
+  - id: lkg_required_for_critical_consumers
+    title: LKG must cover all critical runtime consumers
+    priority: P1
+    status: PARTIAL
+    category: resilience
+    target_invariants:
+      - runtime.last_known_good_required_for_critical_consumers
+    required_fixes:
+      - lkg_expansion
+    summary: Shared LKG lib + ingress done. Envoy/MinIO/DNS migration pending.
+
+  - id: critical_registry_completeness
+    title: Every critical key must have registered owner, schema, and policy
+    priority: P1
+    status: PARTIAL
+    category: governance
+    target_invariants:
+      - critical_state.registry_ownership_required
+    required_fixes:
+      - critical_state_registry_ownership
+    summary: Registry structs done 2026-05-04. Doctor iteration not yet wired.
+
+  - id: bootstrap_promotion_guard
+    title: Bootstrap state must never become authoritative without promotion
+    priority: P1
+    status: PARTIAL
+    category: desired_state
+    target_invariants:
+      - desired.bootstrap_state_requires_promotion
+    required_fixes:
+      - bootstrap_state_promotion
+    summary: authoritative field stamped. Promotion reconciler not yet implemented.
+
+  - id: topology_safety_gate
+    title: Drift reconciler must always run topology safety preflight
+    priority: P0
+    status: PARTIAL
+    category: safety
+    target_invariants:
+      - topology.reconciler_must_respect_safety_contract
+    required_fixes:
+      - topology_safety_drift_reconciler
+    summary: topologyPreflightForRemove done. Drift action planner integration missing.
+
+  - id: bounded_queries_everywhere
+    title: All critical control-path queries must have bounded context
+    priority: P0
+    status: PARTIAL
+    category: resilience
+    target_invariants:
+      - critical_queries.must_be_bounded
+    required_fixes:
+      - bounded_critical_queries
+    summary: 13 hot paths done. DNS reconciler not yet audited.
+
+  - id: destructive_action_guards
+    title: All destructive actions require explicit guard and audit
+    priority: P0
+    status: PARTIAL
+    category: safety
+    target_invariants:
+      - destructive_actions.require_explicit_guard
+    required_fixes:
+      - destructive_action_guards
+    summary: IsExplicitDisable() done. Doctor invariant emission and rate-limited audit missing.
+
+  - id: scylla_rf_policy
+    title: Critical Scylla keyspace RF must match storage node count policy
+    priority: P1
+    status: DONE
+    category: database_resilience
+    target_invariants:
+      - scylla.critical_keyspace_replication_policy
+    required_fixes:
+      - scylla_critical_keyspace_rf_policy
+    summary: Done 2026-05-04. Schema guard wired, doctor finding emitted.

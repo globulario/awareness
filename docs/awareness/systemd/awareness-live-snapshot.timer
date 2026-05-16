@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Globular Awareness Live Mirror Refresh every 5 minutes
+Documentation=https://globular.io/docs/awareness/live_overlay
+
+[Timer]
+# Start 2 minutes after boot to avoid contending with service startup.
+OnBootSec=2min
+# Repeat every 5 minutes — matches liveSnapshotTTLSeconds (300s) in the collector.
+OnUnitActiveSec=5min
+# Allow up to 30s of jitter to avoid thundering-herd on multi-node clusters.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

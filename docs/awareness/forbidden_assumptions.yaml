@@ -1,0 +1,106 @@
+forbidden_assumptions:
+  - id: assumption.keepalived_installed_by_default
+    statement: Keepalived is installed by default on all nodes
+    status: false
+    why_wrong:
+      - cluster bootstrap does not install keepalived unless the node has the gateway profile
+      - VIP management must be verified from packages and systemd units
+    caused_failures:
+      - vip_repair_hallucination
+    safer_checks:
+      - verify keepalived package is installed via node-agent inventory
+      - verify keepalived systemd unit exists and is active
+      - verify keepalived.conf exists under /etc/keepalived/
+      - verify VRRP process is running and in correct state
+    related_invariants:
+      - layer0.vip_management_requires_explicit_owner
+    last_verified: 2026-05-10
+    stale_after_days: 180
+
+  - id: assumption.missing_inventory_means_node_down
+    statement: A node missing from the inventory snapshot is known to be down
+    status: false
+    why_wrong:
+      - collector may return partial inventory due to network partition or timeout
+      - missing NodeRecord is not proof of service failure
+      - inventory snapshot is a point-in-time observation, not continuous truth
+    caused_failures:
+      - false_write_quorum_lost_alert
+      - objectstore.local_membership_inference
+    safer_checks:
+      - check MinIO health endpoint directly
+      - compare desired pool membership vs collected inventory
+      - classify missing nodes as uncertain, not down
+    related_invariants:
+      - objectstore.topology_contract
+    last_verified: 2026-05-14
+    stale_after_days: 180
+
+  - id: assumption.latest_repository_version_is_desired_truth
+    statement: The latest version in the repository is what should be running
+    status: false
+    why_wrong:
+      - desired state is resolved and persisted in etcd by the controller
+      - once desired.build_id is written, it is the convergence target
+      - the repository may have newer versions that are not yet desired
+    caused_failures:
+      - minio.version_drift_auth_failure
+    safer_checks:
+      - read desired state from etcd /globular/resources/DesiredService/
+      - compare installed build_id to desired build_id
+      - never compare installed version to latest repository version
+    related_invariants:
+      - desired.build_id_immutable
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: assumption.etcd_key_absent_means_deleted
+    statement: An absent etcd key means the resource was intentionally deleted
+    status: false
+    why_wrong:
+      - etcd lease expiry can silently remove keys
+      - network partition can make keys appear absent
+      - the controller must check for explicit delete intent, not key absence alone
+    caused_failures:
+      - critical_state.absent_key_interpreted_as_stop
+    safer_checks:
+      - check etcd watch events for explicit delete vs expiry
+      - compare against last known state before concluding deletion
+    related_invariants:
+      - critical_state.absence_is_not_destructive_intent
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: assumption.installed_state_implies_running
+    statement: If a package is installed, the service is running
+    status: false
+    why_wrong:
+      - installed state (Layer 3) and runtime state (Layer 4) are independent
+      - systemd unit can be stopped, failed, or masked despite package installation
+      - the node agent tracks installed and runtime state separately
+    caused_failures:
+      - runtime.installed_state_not_liveness
+    safer_checks:
+      - query node-agent runtime health separately from installed packages
+      - check systemd unit active state
+    related_invariants:
+      - runtime.installed_state_not_liveness
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: assumption.graph_output_is_live_cluster_state
+    statement: Awareness graph output reflects current cluster state
+    status: false
+    why_wrong:
+      - graph is compiled from YAML at build time
+      - graph can be hours or days stale
+      - live cluster state comes from etcd and runtime collectors
+    caused_failures: []
+    safer_checks:
+      - use cluster_get_health or node-agent APIs for live state
+      - check graph_freshness field in preflight output
+      - run awareness live-snapshot before preflight for fresh runtime data
+    related_invariants:
+      - awareness.graph_edges_need_provenance
+    last_verified: 2026-04-15
+    stale_after_days: 180

@@ -1,0 +1,86 @@
+remediation_contracts:
+  - id: remediation.objectstore_quorum_alert
+    title: Safe handling of objectstore quorum alert
+    when:
+      failure_modes:
+        - false_write_quorum_lost_alert
+        - objectstore.local_membership_inference
+    allowed_actions:
+      - collect inventory snapshot from node-agent
+      - compare desired pool membership vs collected inventory
+      - check MinIO health endpoint on each pool node
+      - classify missing nodes as uncertain (not down) without explicit health failure
+      - suppress finding if only uncertainty exists and no confirmed failure
+    forbidden_actions:
+      - remove MinIO data volumes
+      - reinitialize MinIO pool
+      - mark a node as down based solely on missing inventory entry
+      - trigger pool topology change without confirmed node failure
+    requires_human_approval:
+      - destructive pool topology transition
+      - removing a node from the MinIO pool
+    last_verified: 2026-05-14
+    stale_after_days: 180
+
+  - id: remediation.etcd_leader_instability
+    title: Safe handling of etcd leader instability
+    when:
+      failure_modes:
+        - etcd.leader_instability
+        - controller.lease_expired_due_to_etcd_instability
+    allowed_actions:
+      - observe etcd member list and leader election state
+      - check etcd member health endpoints
+      - review keepalived VIP state to confirm VIP is not poisoning peer URLs
+      - review etcd WAL for NOSPACE or disk-full conditions
+      - report current leader and quorum state
+    forbidden_actions:
+      - remove etcd members without confirming they are genuinely unreachable
+      - force-overwrite etcd peer URLs without understanding VIP contamination
+      - restart all etcd members simultaneously
+    requires_human_approval:
+      - etcd member removal
+      - etcd cluster re-initialization
+    last_verified: 2026-05-10
+    stale_after_days: 180
+
+  - id: remediation.node_agent_install_failure
+    title: Safe handling of node agent install failure
+    when:
+      failure_modes:
+        - deterministic.install.failure.retry_loop
+        - install.result.partial_commit
+    allowed_actions:
+      - read install error from etcd job record
+      - check MinIO artifact availability for the target build_id
+      - verify node-agent has network access to MinIO
+      - verify pkill in ExecStartPre uses -x not -f
+      - check systemd journal for service start errors
+    forbidden_actions:
+      - automatically rollback without explicit Force=true approval
+      - overwrite desired build_id to "fix" version mismatch
+      - delete etcd desired state key to force re-resolution
+    requires_human_approval:
+      - rollback to previous version (Force=true)
+      - changing desired build_id
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: remediation.vip_contamination
+    title: Safe handling of VIP contamination in keepalived + etcd
+    when:
+      failure_modes:
+        - vip_contamination.node_routable_ip_returns_vip
+    allowed_actions:
+      - check /etc/hosts for VIP override
+      - verify etcd peer URLs do not contain the VIP address
+      - verify scylla seeds do not contain the VIP address
+      - rename legacy etcd member before keepalived state changes
+      - use StableIP(clusterVIP) instead of PrimaryIP() for non-VIP nodes
+    forbidden_actions:
+      - remove etcd members without renaming them first
+      - change keepalived state while etcd peer URL update is in progress
+    requires_human_approval:
+      - etcd member rename and peer URL update
+    last_verified: 2026-05-10
+    stale_after_days: 180

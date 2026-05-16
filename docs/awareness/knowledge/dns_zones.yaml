@@ -1,0 +1,106 @@
+# dns_zones.yaml — static DNS topology knowledge for the awareness graph.
+#
+# This file captures the INTENDED DNS topology: known zones, canonical
+# service endpoints, and external domain specs. Live DNS state is tracked
+# separately via the live-snapshot collector.
+#
+# The DNS extractor (awareness/extractors/dns) reads this file and emits:
+#   - dns_zone nodes
+#   - service_endpoint nodes
+#   - domain_spec nodes
+#   - Edges: dns_record_resolves_to, service_endpoint_advertised_by,
+#            domain_spec_declares_record, dns_record_risks_invariant,
+#            service_endpoint_covered_by_cert
+
+dns_zones:
+  - id: globular.internal
+    kind: internal
+    summary: Internal cluster zone — all node hostnames and service names resolve here
+    records:
+      - name: globular.internal
+        type: A
+        resolves_to: vip
+        risks_invariants:
+          - recovery.must_not_depend_on_dns_only
+      - name: "*.globular.internal"
+        type: A
+        resolves_to: vip
+        risks_invariants:
+          - recovery.must_not_depend_on_dns_only
+      - name: minio.globular.internal
+        type: A
+        resolves_to: minio_pool
+        risks_invariants:
+          - recovery.must_not_depend_on_dns_only
+
+  - id: globular.io
+    kind: external
+    summary: External public zone — public-facing endpoints with Let's Encrypt certs
+    records:
+      - name: globular.io
+        type: A
+        resolves_to: vip_public
+      - name: "*.globular.io"
+        type: A
+        resolves_to: vip_public
+
+service_endpoints:
+  - id: cluster_controller.globular.internal
+    fqdn: globular.internal
+    port: 12000
+    protocol: grpc
+    tls: true
+    zone: globular.internal
+    covered_by_cert: wildcard.globular.internal
+    advertised_by: cluster_controller
+    risks_invariants:
+      - service.endpoint.etcd_address_reachability
+
+  - id: node_agent.globular.internal
+    fqdn: "*.globular.internal"
+    port: 11000
+    protocol: grpc
+    tls: true
+    zone: globular.internal
+    covered_by_cert: wildcard.globular.internal
+    advertised_by: node_agent
+
+  - id: mcp.globular.internal
+    fqdn: globular.internal
+    port: 10260
+    protocol: grpc
+    tls: true
+    zone: globular.internal
+    covered_by_cert: wildcard.globular.internal
+    advertised_by: mcp
+
+  - id: dns.globular.internal
+    fqdn: globular.internal
+    port: 10006
+    protocol: grpc
+    tls: true
+    zone: globular.internal
+    covered_by_cert: wildcard.globular.internal
+    advertised_by: dns
+
+domain_specs:
+  - id: globular.io
+    fqdn: globular.io
+    zone: globular.io
+    kind: external
+    acme_enabled: true
+    cert_id: wildcard.globular.io
+    records:
+      - globular.io
+      - "*.globular.io"
+
+  - id: globular.internal
+    fqdn: globular.internal
+    zone: globular.internal
+    kind: internal
+    acme_enabled: false
+    cert_id: wildcard.globular.internal
+    records:
+      - globular.internal
+      - "*.globular.internal"
+      - minio.globular.internal

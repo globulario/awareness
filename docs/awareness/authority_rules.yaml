@@ -1,0 +1,90 @@
+authority_rules:
+  - id: authority.desired_build_id_is_immutable_after_resolution
+    title: Desired build identity is authoritative after resolution
+    layer: Desired
+    question: Which build should drift comparison use as the target?
+    rule: Once desired.build_id is resolved from version and written to etcd, compare installed.build_id to desired.build_id. Never re-resolve from the repository.
+    wrong_authority:
+      - latest repository version
+      - package filename inference
+      - floating desired.version (before resolution)
+    correct_authority:
+      - persisted desired build_id in etcd /globular/resources/DesiredService/
+    related_invariants:
+      - desired.build_id_immutable
+    forbidden_assumptions:
+      - latest_repository_version_is_desired_truth
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: authority.installed_state_from_node_agent_not_controller
+    title: Installed state is owned by the node agent, not the controller
+    layer: Installed
+    question: What is actually installed on a given node?
+    rule: Read installed state from etcd /globular/nodes/{node_id}/packages/ written by the node-agent heartbeat. Never infer installed state from desired state or runtime health.
+    wrong_authority:
+      - controller desired state
+      - MinIO artifact availability
+      - runtime health checks
+    correct_authority:
+      - etcd /globular/nodes/{node_id}/packages/ (node-agent written)
+    related_invariants:
+      - infra.heartbeat_not_desired_authority
+      - runtime.installed_state_not_liveness
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: authority.runtime_health_from_systemd_not_installed
+    title: Runtime health comes from systemd/gRPC health, not installed state
+    layer: Runtime
+    question: Is this service actually running and healthy?
+    rule: Query systemd unit state or gRPC health endpoint. A package being installed does not mean the service is running.
+    wrong_authority:
+      - installed package state
+      - desired state
+      - network reachability alone
+    correct_authority:
+      - systemd unit active state
+      - gRPC health check response
+      - node-agent runtime health report
+    related_invariants:
+      - runtime.installed_state_not_liveness
+    forbidden_assumptions:
+      - installed_state_implies_running
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: authority.inventory_state_is_uncertain_when_missing
+    title: Missing inventory entry is uncertain state, not confirmed down
+    layer: Inventory
+    question: Is a node known to be down if it is absent from the inventory snapshot?
+    rule: Classify missing inventory entries as uncertain, not down. Only confirmed health checks or explicit failure signals can classify a node as down.
+    wrong_authority:
+      - inventory snapshot absence
+      - collector timeout
+      - partial inventory result
+    correct_authority:
+      - explicit health check failure with error
+      - direct node-agent gRPC health response
+    related_invariants:
+      - objectstore.topology_contract
+    forbidden_assumptions:
+      - missing_inventory_means_node_down
+    last_verified: 2026-05-14
+    stale_after_days: 180
+
+  - id: authority.etcd_is_sole_config_truth
+    title: etcd is the sole source of truth for all cluster configuration
+    layer: Repository
+    question: Where does a service read its configuration?
+    rule: All cluster configuration, service endpoints, and desired state live in etcd. No environment variables, no hardcoded addresses, no config files for service configuration.
+    wrong_authority:
+      - environment variables
+      - hardcoded addresses in source code
+      - local config files bypassing etcd
+    correct_authority:
+      - etcd /globular/system/config
+      - etcd /globular/services/{service_id}/config
+    related_invariants: []
+    last_verified: 2026-04-15
+    stale_after_days: 365

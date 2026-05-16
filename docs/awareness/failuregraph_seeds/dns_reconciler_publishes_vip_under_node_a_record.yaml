@@ -1,0 +1,60 @@
+id: ERRCAT-dns_reconciler_publishes_vip_under_node_a_record
+type: ErrorCategory
+name: dns_reconciler_publishes_vip_under_node_a_record
+severity: high
+summary: >
+  Node A records (e.g. globule-ryzen.globular.internal) end up containing both
+  the node's real IP AND the floating VIP. When client code resolves the node's
+  hostname and gets two records, it may pick the VIP, and traffic loops back to
+  whoever currently holds the VIP — often a different node than intended.
+  Confirmed lingering even after VIP migration: removing the stale entry via
+  `globular dns a remove` returns success but a reconciler re-adds it within
+  seconds.
+
+signatures:
+  - "tls reload failed"
+  - "fail to sign certificate! read ca.key from canonical PKI path"
+  - DNS lookup returns 2+ A records for a per-node FQDN, one being the VIP
+
+symptoms:
+  - id: SYM-node_fqdn_resolves_to_vip
+    summary: "dig @<cluster-dns> globule-X.globular.internal returns the VIP in addition to the node's real IP"
+  - id: SYM-cross_node_proxy_loops_back
+    summary: "Service A asking gateway B to forward to node C lands on B itself (because C's FQDN resolved to the VIP held by B)"
+  - id: SYM-dns_remove_does_not_persist
+    summary: "globular dns a remove succeeds (exit 0) but the record reappears within one reconcile interval"
+
+causes:
+  - id: CAUSE-primaryip_returns_floating_vip
+    summary: >
+      Same root cause as ERRCAT-vip_transition_evicts_etcd_member.
+      controllerState.Node.PrimaryIP() returns the VIP for nodes that hold it.
+      The DNS reconciler reads PrimaryIP() (or an equivalent path) and registers
+      the result as one of the node's A records.
+  - id: CAUSE-no_separation_between_per_node_and_cluster_dns_names
+    summary: >
+      The cluster does not maintain a distinct FQDN for the cluster ingress
+      (e.g. cluster.globular.internal or globular.internal A→VIP). Per-node FQDNs
+      are reused as both the node's identity AND the cluster ingress, so
+      reconcilers conflate them.
+
+resolutions:
+  - id: RES-introduce_dedicated_cluster_ingress_fqdn
+    summary: >
+      Add a dedicated cluster-ingress FQDN whose A record is the VIP. Stop
+      registering the VIP under per-node FQDNs. Per-node FQDN → real IP only.
+  - id: RES-fix_primaryip_to_exclude_floating_vip
+    summary: >
+      Make Node.PrimaryIP() exclude floating VIPs (cross-reference the keepalived
+      participant list). All callers (dns reconciler, removeStaleMembers,
+      AdvertiseFqdn fallback) benefit from a single fix.
+
+wrong_fixes:
+  - "Manually removing the record with `globular dns a remove` — reconciler re-adds it"
+  - "Adding /etc/hosts entries on individual nodes — masks the symptom on one node, leaves the rest broken"
+  - "Removing 10.0.0.100 from /globular/dns zones in etcd — reconciler treats etcd as cache, repopulates from controller state"
+
+tests:
+  - "globular dns a get globule-<node> returns exactly one A record (the node's real IP)"
+  - "After VIP failover from node A to node B, A's per-node FQDN no longer resolves to the VIP"
+  - "Cluster-ingress FQDN exists and resolves to the current VIP holder"

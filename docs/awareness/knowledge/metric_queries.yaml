@@ -1,0 +1,40 @@
+queries:
+  - id: node_cpu_percent
+    query: '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+    service: node
+    unit: percent
+
+  - id: node_memory_percent
+    query: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100'
+    service: node
+    unit: percent
+
+  - id: node_disk_percent
+    query: '100 * (1 - node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})'
+    service: node
+    unit: percent
+
+  - id: etcd_fsync_latency_ms
+    query: 'histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])) * 1000'
+    service: etcd
+    unit: ms
+
+  - id: etcd_leader_changes_1h
+    query: 'changes(etcd_server_leader_changes_seen_total[1h])'
+    service: etcd
+    unit: count
+
+  - id: workflow_failed_runs_15m
+    query: 'increase(globular_workflow_runs_total{status="failed"}[15m])'
+    service: workflow
+    unit: count
+
+  - id: scylla_disk_percent
+    query: '100 * (1 - node_filesystem_avail_bytes{job="node",mountpoint="/var/lib/scylla"} / node_filesystem_size_bytes{job="node",mountpoint="/var/lib/scylla"})'
+    service: scylla
+    unit: percent
+
+  - id: minio_offline_disks
+    query: 'minio_cluster_disk_offline_drives_count'
+    service: minio
+    unit: count

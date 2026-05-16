@@ -20,8 +20,8 @@ func openGraph(t *testing.T) *graph.Graph {
 }
 
 func realDocsDir() string {
-	// Package lives at golang/awareness/extractors/dns/ — 4 levels up to repo root.
-	return filepath.Join("..", "..", "..", "..", "docs", "awareness")
+	// Package lives at awareness/extractors/dns/ — 2 levels up to repo root.
+	return filepath.Join("..", "..", "docs", "awareness")
 }
 
 // TestDNSExtract_EmptyDirSkipped verifies that an empty docsAwarenessDir causes

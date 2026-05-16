@@ -1,0 +1,2483 @@
+invariants:
+    - id: service.endpoint.etcd_address_reachability
+      title: etcd-registered service address must be validated reachable with the correct interface before reconciliation depends on it
+      severity: critical
+      status: active
+      summary: |
+        When a service writes its address and port to etcd (on start or after port reallocation),
+        the controller must probe that address to verify the correct gRPC service interface responds
+        — not just a TCP connection. A successful TCP connect to a wrong process (cgroup-escaped
+        orphan, a different service) must never be treated as "service reachable". Until the
+        interface probe passes, the service is DEGRADED. A DEGRADED workflow service must not
+        halt ALL reconciliation: only operations that directly depend on workflow dispatch are
+        blocked; health checks, status reads, and non-workflow installs must continue.
+      protects:
+        state:
+            - /globular/services/{service_id}/config
+            - /globular/services/{service_id}/instances/{node}
+        files:
+            - golang/cluster_controller/cluster_controller_server/release_reconciler.go
+            - golang/cluster_controller/cluster_controller_server/workflow_execute.go
+        symbols:
+            - probeWorkflowService
+            - openCircuitBreaker
+            - reconcileCluster
+      enforcement: |
+        Before the controller opens a circuit breaker on workflow dispatch failures, it must
+        distinguish between: (a) correct service not reachable (CB open, posture DEGRADED for
+        workflow-dependent ops only) vs. (b) wrong service responding (trigger node-agent
+        restart, update etcd address after interface probe confirms). The service itself must
+        confirm its listener is bound and responding before writing the new address to etcd.
+      forbidden_fixes:
+        - opening_global_circuit_breaker_on_single_service_tcp_failure
+        - trusting_tcp_connect_as_proof_of_service_identity
+        - halting_all_reconciliation_when_workflow_is_degraded
+        - writing_new_port_to_etcd_before_listener_is_confirmed_reachable
+      required_tests:
+        - TestControllerProbsServiceInterfaceNotJustTCP
+        - TestCircuitBreakerScopedNotGlobal
+        - TestWorkflowDegradedDoesNotBlockNonWorkflowInstalls
+      related_failure_modes:
+        - service.endpoint.port_squatting_cgroup_escape
+
+    - id: service.endpoint.cgroup_escape_guard
+      title: Every service unit must kill orphaned processes before starting a new instance
+      severity: high
+      status: active
+      summary: |
+        When a service process escapes its systemd cgroup (e.g., via a child fork, exec, or
+        race during upgrade), systemd cannot track or kill it on restart. The orphan continues
+        holding its port, causing the new instance to reallocate to a different port. This
+        triggers a cascade: etcd gets a new address, the mesh may route to the old address,
+        the controller sees an interface mismatch, and opens circuit breakers. Every service
+        unit file AND its inline spec counterpart must include:
+          ExecStartPre=+/bin/sh -c 'pkill -9 -x <binary_name> || true'
+        as the FIRST ExecStartPre line, to guarantee any orphan is killed before the new
+        instance attempts to bind its port. MUST use -x (matches process name exactly),
+        never -f — `pkill -f` matches against the FULL command line of every process,
+        including the parent shell whose argv contains the binary name as its pkill
+        argument, so the parent shell self-SIGKILLs and ExecStartPre fails. Note: -x
+        relies on the kernel comm field which is truncated to 15 chars (TASK_COMM_LEN);
+        for binaries with names longer than 15 characters, use the regex bracket trick:
+        pkill -9 -f '[<first_char>]<rest_of_name>' (e.g. '[c]luster_controller_server').
+      protects:
+        state:
+            - /globular/services/{service_id}/config
+        files:
+            - generated/payload/workflow/specs/workflow_service.yaml
+            - generated/specs/mcp_service.yaml
+        symbols:
+            - ExecStartPre
+      enforcement: |
+        The pkill ExecStartPre must use the '+' prefix (runs as root regardless of User= setting)
+        and must be the first ExecStartPre line so no subsequent pre-start check can pass with
+        a running orphan. The '|| true' ensures the guard never fails when no orphan is present.
+        This guard must be applied consistently to ALL service unit files — not just services
+        that have experienced cgroup escapes before.
+      forbidden_fixes:
+        - relying_on_systemd_to_kill_processes_outside_the_cgroup
+        - adding_pkill_guard_only_after_an_incident
+        - using_non_root_pkill_without_plus_prefix
+      required_tests:
+        - TestOrphanKilledBeforeServiceRestart
+      related_failure_modes:
+        - service.endpoint.port_squatting_cgroup_escape
+
+    - id: service.desired_state.bom_completeness
+      title: Every BOM service package must have a ServiceDesiredVersion record
+      severity: high
+      status: active
+      summary: |
+        The controller reconciler only installs services for which a ServiceDesiredVersion
+        record exists in etcd. Every service package listed in the platform BOM
+        (release-index.json) must have a corresponding record written during platform-upgrade.
+        Absence of the record makes the service permanently invisible to the reconciler —
+        profile-aware dispatch, dependency ordering, and health checks are all irrelevant
+        for a service the reconciler cannot see.
+      protects:
+        state:
+            - /globular/resources/ServiceDesiredVersion/
+        files:
+            - golang/globularcli/upgrade_cmds.go
+            - golang/cluster_controller/cluster_controller_server/desired_from_resources.go
+        symbols:
+            - runPlatformUpgrade
+            - upsertServiceDesiredVersion
+            - loadDesiredServices
+      enforcement: |
+        platform-upgrade writes ServiceDesiredVersion records directly to etcd (not via gRPC)
+        for all service packages in the BOM. Direct writes are mesh-independent and survive
+        early bootstrap when the mesh may not yet be routing.
+      forbidden_fixes:
+        - writing_desired_state_via_grpc_only_during_bootstrap
+        - manually_seeding_desired_state_per_node
+        - skipping_service_packages_from_bom
+        - assuming_publish_implies_desired_state
+      required_tests:
+        - TestPlatformUpgradeWritesServiceDesiredVersionWithoutMesh
+        - TestAllBOMPackagesHaveDesiredState
+      related_failure_modes:
+        - service.desired_state.pipeline_gap
+        - install.desired_state.invisible_service
+
+    - id: service.desired_state.direct_etcd_write
+      title: Desired state writes during bootstrap must bypass the mesh
+      severity: high
+      status: active
+      summary: |
+        During early bootstrap (Day-0 / Day-1) the service mesh (Envoy) may not yet be
+        routing. Any desired-state write that goes through a gRPC RPC routed via the mesh
+        will fail silently and leave the cluster with an incomplete desired state. All
+        pipeline commands that must run during bootstrap (platform-upgrade, materialize-infra)
+        must write to etcd directly, not via gRPC service RPCs.
+      protects:
+        state:
+            - /globular/resources/ServiceDesiredVersion/
+            - /globular/resources/InfrastructureRelease/
+        files:
+            - golang/globularcli/upgrade_cmds.go
+        symbols:
+            - upsertServiceDesiredVersion
+            - updateInfraReleaseVersion
+      enforcement: |
+        Both service and infrastructure desired state are written via direct etcd client
+        in upgrade_cmds.go. Neither path requires the mesh to be up.
+      forbidden_fixes:
+        - writing_desired_state_via_grpc_only_during_bootstrap
+      required_tests:
+        - TestPlatformUpgradeWritesServiceDesiredVersionWithoutMesh
+      related_failure_modes:
+        - service.desired_state.pipeline_gap
+
+    - id: objectstore.topology_contract
+      title: MinIO topology contract
+      severity: critical
+      status: active
+      summary: |
+        MinIO may only run on nodes present in ObjectStoreDesiredState. Node-agent must never infer objectstore membership from local disk state.
+      protects:
+        state:
+            - /globular/objectstore/config
+            - /globular/objectstore/desired
+        files:
+            - golang/config/minio_runtime_render.go
+        symbols:
+            - enforceMinioHeld
+            - nodeIPInPool
+      forbidden_fixes:
+        - start_minio_from_local_health_check
+        - infer_minio_membership_from_disk
+        - wipe_minio_sys_without_approved_transition
+        - round_robin_dns_for_minio_writes
+      required_tests:
+        - TestMinioHeldWhenNodeNotInPool
+        - TestTopologyRenderParity
+        - TestApprovedTransitionRequiredForWipe
+      related_failure_modes:
+        - objectstore.local_membership_inference
+        - repository.minio.recovery_cycle
+      implemented_by:
+        - file: golang/config/minio_runtime_render.go
+          functions:
+            - enforceMinioHeld
+            - nodeIPInPool
+          trust: verified
+      authority:
+        - etcd: /globular/objectstore/config
+        - etcd: /globular/objectstore/desired
+      verified_by:
+        - TestMinioHeldWhenNodeNotInPool
+        - TestTopologyRenderParity
+        - TestApprovedTransitionRequiredForWipe
+      violated_by:
+        - objectstore.local_membership_inference
+        - repository.minio.recovery_cycle
+      decision_guidance:
+        - "MinIO membership is determined by ObjectStoreDesiredState in etcd — never by local disk state, MinIO API responses, or node-agent heuristics"
+        - "A node that is not in the desired pool must NOT start MinIO even if it has valid MinIO data on disk — this is the wipe_minio_sys_without_approved_transition forbidden fix"
+    - id: install.result.atomic_commit
+      title: Install result must commit atomically
+      severity: critical
+      status: active
+      summary: |
+        Installed-state, result promotion, and action cleanup must commit together in one durable transaction. Partial commits leave the system in an ambiguous state that causes repeated reconcile dispatches.
+      protects:
+        state:
+            - /globular/nodes/{node_id}/packages/{kind}/{name}
+            - /globular/resources/ActionResult/{id}
+        files:
+            - golang/node_agent/node_agent_server/installed_services.go
+            - golang/cluster_controller/cluster_controller_server/reconciler.go
+        symbols:
+            - commitInstallResult
+            - applyPackageRelease
+      forbidden_fixes:
+        - clear_action_before_installed_state
+        - mark_release_available_from_local_success
+        - retry_install_blindly
+      required_tests:
+        - TestLeaderFailoverDuringResultCommit
+        - TestPendingSyncRecovery
+      related_failure_modes:
+        - install.result.partial_commit
+    - id: runtime.installed_state_not_liveness
+      title: Installed-state is not runtime liveness
+      severity: high
+      status: active
+      summary: |
+        Installed-state proves package application to disk, not runtime liveness. A package may be installed but its systemd unit may be stopped, crashed, or degraded. Never treat installed-state as proof the service is running.
+      protects:
+        state:
+            - /globular/nodes/{node_id}/packages/{kind}/{name}
+        symbols:
+            - IsInstalled
+            - GetInstalledState
+      forbidden_fixes:
+        - assume_installed_means_running
+        - skip_systemd_health_check_if_installed
+      required_tests:
+        - TestInstalledNotImpliesRunning
+        - TestRuntimeHealthSeparateFromInstalled
+      implemented_by:
+        - file: golang/cluster_controller/cluster_controller_server/reconcile_runtime.go
+          trust: declared
+        - file: golang/node_agent/node_agent_server/installed_services.go
+          trust: declared
+    - id: desired.build_id_immutable
+      title: Desired build_id must not mutate after resolution
+      severity: critical
+      status: active
+      summary: |
+        Once a desired build_id is resolved and written to etcd, it must not be silently changed. Mutations cause node-agent to see a different artifact than the one the controller resolved, breaking audit trails and potentially installing an unverified artifact.
+      protects:
+        state:
+            - /globular/resources/DesiredService/{name}
+        symbols:
+            - resolveDesiredBuildID
+            - writeDesiredState
+      forbidden_fixes:
+        - overwrite_desired_build_id_silently
+        - resolve_build_id_at_install_time
+      required_tests:
+        - TestDesiredBuildIDImmutableAfterWrite
+        - TestBuildIDNotResolvedAtNodeAgent
+      implemented_by:
+        - file: golang/cluster_controller/cluster_controller_server/release_resolver.go
+          trust: declared
+        - file: golang/cluster_controller/cluster_controller_server/desired_state_handlers.go
+          trust: declared
+      authority:
+        - etcd: /globular/resources/DesiredService/{name}
+      verified_by:
+        - TestDesiredBuildIDImmutableAfterWrite
+        - TestBuildIDNotResolvedAtNodeAgent
+      decision_guidance:
+        - "build_id (UUID) is the sole artifact identity — it must be resolved once at the controller when creating the desired record and never changed"
+        - "build_number (integer) is a CI sequence counter — it is NOT interchangeable with build_id"
+    - id: infra.desired_hash_consistency
+      title: Infrastructure desired_hash must be computed consistently
+      severity: critical
+      status: active
+      summary: |
+        ComputeInfrastructureDesiredHash must use identical inputs on the producer side (controller) and the consumer side (node-agent convergence check). Any divergence in inputs creates a permanent mismatch loop that never converges — desired_hash computed by controller will never match the hash validated at the node-agent layer.
+      protects:
+        state:
+            - /globular/resources/InfrastructureRelease/{name}
+            - /globular/nodes/{node_id}/packages/infra/{name}
+        files:
+            - golang/cluster_controller/cluster_controller_server/release_hash.go
+            - golang/cluster_controller/cluster_controller_server/reconcile_actions.go
+            - golang/cluster_controller/cluster_controller_server/release_runtime_convergence.go
+        symbols:
+            - ComputeInfrastructureDesiredHash
+            - lookupServiceReleaseBuildID
+            - classifyPackageConvergence
+      forbidden_fixes:
+        - compute_hash_only_at_controller
+        - recompute_hash_at_node_agent_with_different_inputs
+        - use_raw_artifact_digest_as_desired_hash
+      required_tests:
+        - TestInfraDesiredHashConsistency
+        - TestLookupServiceReleaseBuildIDUsesDesiredHash
+      related_failure_modes:
+        - convergence.hash_mismatch_loop
+      implemented_by:
+        - file: golang/cluster_controller/cluster_controller_server/release_hash.go
+          functions:
+            - ComputeInfrastructureDesiredHash
+          trust: verified
+        - file: golang/cluster_controller/cluster_controller_server/release_runtime_convergence.go
+          functions:
+            - classifyPackageConvergence
+          trust: verified
+      authority:
+        - etcd: /globular/resources/InfrastructureRelease/{name}
+        - etcd: /globular/nodes/{node_id}/packages/infra/{name}
+      verified_by:
+        - TestInfraDesiredHashConsistency
+        - TestLookupServiceReleaseBuildIDUsesDesiredHash
+      violated_by:
+        - convergence.hash_mismatch_loop
+      decision_guidance:
+        - "ComputeInfrastructureDesiredHash inputs must be identical on both producer (controller) and consumer (node-agent) sides — any asymmetry creates a permanent loop"
+        - "Never use raw artifact digest as desired_hash — the hash must incorporate package kind, build_id, and version together"
+    - id: infra.heartbeat_not_desired_authority
+      title: Heartbeat is observer-only — it must never set desired state
+      severity: critical
+      status: active
+      summary: |
+        The node-agent heartbeat (syncInstalledStateToEtcd) may only write observed and installed state. It must never compute, set, or overwrite desired_hash, desired_version, or any field owned by the controller's desired-state layer. Writing desired state from the heartbeat path breaks the 4-layer state model and causes uncontrolled convergence drift.
+      protects:
+        state:
+            - /globular/nodes/{node_id}/status
+            - /globular/nodes/{node_id}/packages/{kind}/{name}
+        files:
+            - golang/node_agent/node_agent_server/heartbeat.go
+            - golang/node_agent/node_agent_server/installed_services.go
+        symbols:
+            - syncInstalledStateToEtcd
+            - ComputeInstalledServices
+            - computeAppliedServicesHash
+      forbidden_fixes:
+        - heartbeat_sets_desired_hash
+        - heartbeat_sets_desired_version
+        - node_agent_writes_to_desired_release
+      required_tests:
+        - TestHeartbeatDoesNotSetDesiredState
+        - TestSyncInstalledStateOnlyWritesObserved
+      related_failure_modes:
+        - infra.desired_hash_mismatch_loop
+      implemented_by:
+        - file: golang/node_agent/node_agent_server/heartbeat.go
+          functions:
+            - syncInstalledStateToEtcd
+            - computeAppliedServicesHash
+          trust: verified
+        - file: golang/node_agent/node_agent_server/installed_services.go
+          functions:
+            - ComputeInstalledServices
+          trust: verified
+      authority:
+        - etcd: /globular/nodes/{node_id}/status
+        - etcd: /globular/nodes/{node_id}/packages/{kind}/{name}
+      verified_by:
+        - TestHeartbeatDoesNotSetDesiredState
+        - TestSyncInstalledStateOnlyWritesObserved
+      violated_by:
+        - infra.desired_hash_mismatch_loop
+      decision_guidance:
+        - "The heartbeat is an observer — it writes /globular/nodes/{id}/status and /nodes/{id}/packages only; any write to /resources/ from the heartbeat path is a violation"
+        - "Heartbeat must be lean: Phase 1 (local markers) + Phase 2 (etcd writes) only — no repository calls, checksumming, or external service dependencies"
+    - id: service.restart_singleflight
+      title: Service restart must go through singleflight gate
+      severity: high
+      status: active
+      summary: |
+        Only one restart may be in-flight per service per convergence tick. Bypassing the singleflight gate causes cascading SIGTERM storms: multiple concurrent restart attempts race, leaving the service in start-limit-hit and requiring manual intervention to reset.
+      protects:
+        state:
+            - /globular/nodes/{node_id}/packages/{kind}/{name}
+        files:
+            - golang/node_agent/node_agent_server/repair_actions.go
+            - golang/cluster_controller/cluster_controller_server/reconcile_actions.go
+        symbols:
+            - repairVerifyRuntime
+            - reconcileChooseWorkflow
+      forbidden_fixes:
+        - restart_without_singleflight_gate
+        - concurrent_restart_on_start_limit_hit
+        - reset_singleflight_before_restart_completes
+      required_tests:
+        - TestRestartSingleflightGate
+        - TestNoDoubleRestartOnConvergenceTick
+      related_failure_modes:
+        - service.restart_storm
+    - id: awareness.annotation_scanner.production_source_only
+      title: Annotation scanner validates production Go source only
+      severity: ERROR
+      status: active
+      summary: |
+        The awareness annotation validator must not treat //globular: strings inside test fixtures as production annotations. Production annotations are validated from non-test Go source files only.
+      forbidden_fixes:
+        - validate_globular_annotations_inside_test_fixtures
+        - treat_raw_string_fixture_annotations_as_source_annotations
+      required_tests:
+        - TestValidateAnnotationsSkipsTestFiles
+      implemented_by:
+        - file: golang/awareness/extractors/goast/extract.go
+          functions:
+            - parseAnnotations
+            - isTestFile
+          trust: strict_verified
+      verified_by:
+        - TestValidateAnnotationsSkipsTestFiles
+      decision_guidance:
+        - "Only scan .go files that do NOT end in _test.go for //globular: annotations — test fixtures embed raw annotation strings that are not production declarations"
+    - id: scylla.critical_keyspace_replication_policy
+      title: Critical Scylla keyspace replication policy
+      severity: critical
+      status: active
+      summary: |
+        In multi-node clusters, critical Scylla keyspaces must never remain below required RF. RF is determined by storage node count: 1 node=RF1, 2 nodes=RF2, 3+nodes=RF3. RF is never auto-lowered.
+      protects:
+        state:
+            - /globular/scylla/schema_guard/{keyspace}
+        files:
+            - golang/cluster_controller/cluster_controller_server/scylla_schema_guard.go
+      forbidden_fixes:
+        - auto_lower_replication_factor
+        - ignore_rf_violation_in_multi_node
+      required_tests:
+        - TestRFPolicyEnforcedOn5NodeCluster
+        - TestRFPolicyAllowsRF1OnSingleNode
+        - TestRFAlterFailurePublishesDegradedStatus
+      related_failure_modes:
+        - scylla.critical_keyspace_under_replicated
+    - id: desired.bootstrap_state_requires_promotion
+      title: Bootstrap desired state requires explicit promotion
+      severity: critical
+      status: active
+      summary: |
+        Temporary/bootstrap values must never be promoted as authoritative desired state without ownership and validation. Bootstrap records must carry source=bootstrap, authoritative=false. Only the controller promotion pass may convert bootstrap→authoritative.
+      protects:
+        state:
+            - /globular/resources/DesiredService/{name}
+            - /globular/ingress/v1/spec
+            - /globular/objectstore/config
+      forbidden_fixes:
+        - treat_bootstrap_state_as_authoritative
+        - claim_convergence_from_bootstrap_records
+      required_tests:
+        - TestBootstrapRecordIgnoredAsFinalByConsumers
+        - TestFirstBootClaimsConvergenceOnlyAfterPromotion
+      related_failure_modes:
+        - desired.bootstrap_premature_convergence
+    - id: critical_state.absence_is_not_destructive_intent
+      title: Missing control-plane key is not a stop or delete command
+      severity: critical
+      status: active
+      summary: |
+        Missing, timed-out, or invalid control-plane state must not imply disable, stop, or delete. Missing key => HOLD_LAST_KNOWN_GOOD. Only an explicit valid disable intent may stop a runtime. Applied to ingress; must be phased in for objectstore, envoy, dns.
+      protects:
+        state:
+            - /globular/ingress/v1/spec
+            - /globular/objectstore/config
+            - /globular/services/{service_id}/config
+      forbidden_fixes:
+        - stop_runtime_on_missing_key
+        - delete_runtime_on_timeout
+        - treat_invalid_spec_as_disable_intent
+      required_tests:
+        - TestMissingKeyDoesNotStopRuntime
+        - TestDeleteKeyWhileRunningKeepsRuntimeActive
+      implemented_by:
+        - file: golang/cluster_controller/cluster_controller_server/desired_state_publisher.go
+          trust: declared
+      related_failure_modes:
+        - critical_state.absent_key_interpreted_as_stop
+    - id: runtime.last_known_good_required_for_critical_consumers
+      title: Critical consumers must hold last-known-good state
+      severity: critical
+      status: active
+      summary: |
+        Critical consumers must preserve service continuity using validated LKG state when authority is temporarily unavailable. LKG must be atomic (tmp+fsync+rename), checksum-validated, and monotonic-generation-guarded. Ingress done; Envoy/MinIO/DNS consumers not yet migrated.
+      protects:
+        state:
+            - /globular/ingress/v1/spec
+            - /globular/objectstore/config
+        files:
+            - golang/globular_service/lkg/lkg.go
+      forbidden_fixes:
+        - overwrite_lkg_with_invalid_state
+        - ignore_lkg_when_authority_unavailable
+        - accept_corrupt_lkg
+      required_tests:
+        - TestCorruptLKGRejectedPriorStateRetained
+        - TestAtomicLKGWriteSurvivesRestart
+        - TestEtcdOutageServesFromLKG
+      related_failure_modes:
+        - runtime.lkg_corrupt_or_missing
+    - id: critical_state.registry_ownership_required
+      title: Every critical key must have one authoritative owner
+      severity: critical
+      status: active
+      summary: |
+        Every critical etcd key must have one authoritative owner, schema version, delete policy, and healing policy. The critical state registry is the single source of truth for key governance. Doctor iterates the registry to detect missing/invalid/stale keys.
+      protects:
+        state:
+            - /globular/ingress/v1/spec
+            - /globular/objectstore/config
+            - /globular/pki/ca
+        files:
+            - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+            - golang/config/critical_keys.go
+      forbidden_fixes:
+        - write_critical_key_without_registered_owner
+        - delete_critical_key_without_policy
+        - accept_unknown_writer_for_critical_state
+      required_tests:
+        - TestRegistryKeyHasCompletePolicy
+        - TestUnknownWriterRejected
+        - TestDeleteCriticalKeyTriggerOwnerRestore
+      related_failure_modes:
+        - critical_state.unregistered_key_governance
+    - id: critical_state.deletion_requires_audited_intent
+      title: Desired-state deletion requires explicit audited intent
+      severity: critical
+      status: active
+      summary: |
+        Destructive desired-state deletion requires explicit audited intent via delete-approval markers (/globular/<domain>/delete_approval/<generation>). Controller restores missing key on next cycle unless a valid approval with matching generation and leader identity exists.
+      protects:
+        state:
+            - /globular/ingress/v1/spec
+            - /globular/objectstore/config
+      forbidden_fixes:
+        - delete_desired_state_without_approval_marker
+        - treat_missing_key_as_delete_intent
+        - accept_stale_delete_approval
+      required_tests:
+        - TestDeleteWithoutApprovalRestoresKey
+        - TestDeleteWithValidApprovalAccepted
+        - TestStaleApprovalGenerationRejected
+      implemented_by:
+        - file: golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+          trust: declared
+      related_failure_modes:
+        - critical_state.accidental_key_deletion
+    - id: reconcile.global_work_must_not_starve_completion
+      title: Reconcile lanes must not starve completion
+      severity: high
+      status: active
+      summary: |
+        One blocked reconcile phase must not freeze critical publishers, release planning, or repair dispatch. Each lane has isolated executor, per-lane timeout, and independent "previous run active" tracking. Emergency lane (ingress/objectstore/spec republish) always runnable.
+      protects:
+        files:
+            - golang/cluster_controller/cluster_controller_server/reconciler.go
+      forbidden_fixes:
+        - start_new_global_work_while_completion_is_blocked
+        - allow_reconcile_tick_to_starve_terminal_commit
+      required_tests:
+        - TestProjectionHangDoesNotBlockReleaseLane
+        - TestScyllaDegradedAllowsIngressRepublish
+        - TestTimeoutReleasesLaneLock
+      related_failure_modes:
+        - reconcile.lane_starvation
+    - id: critical_queries.must_be_bounded
+      title: Critical control-plane queries must be bounded
+      severity: high
+      status: active
+      summary: |
+        Queries in critical control paths must be bounded by timeout/context (5-15s policy by operation class) and must not block reconciliation forever. DNS reconciler and some secondary paths still need timeout audit.
+      protects:
+        files:
+            - golang/cluster_controller/cluster_controller_server/reconciler.go
+            - golang/dns/dns_server/server.go
+      forbidden_fixes:
+        - run_unbounded_query_in_reconcile_path
+        - ignore_context_timeout_in_critical_query
+        - block_controller_loop_on_external_query
+      required_tests:
+        - TestQueryTimeoutMappedToDegradedCategory
+        - TestSlowBackendTriggersTimeoutAndLaneRecovery
+      related_failure_modes:
+        - critical_queries.unbounded_hang
+    - id: derived_state.must_not_block_authority
+      title: Derived state failure must not block authority publication
+      severity: high
+      status: active
+      summary: |
+        Failure in derived/projection pipelines cannot block authoritative desired-state publication. Projections are consumers of authority, never a gate. If projections fail, mark degraded and continue authority writes and repair workflows.
+      protects:
+        files:
+            - golang/cluster_controller/cluster_controller_server/reconciler.go
+      forbidden_fixes:
+        - require_derived_state_before_publishing_authority
+        - block_authority_on_cache_availability
+      required_tests:
+        - TestProjectionScanHangAllowsIngressRepublish
+        - TestDerivedLaneErrorDoesNotFlipAuthorityToBlocked
+      related_failure_modes:
+        - derived_state.projection_blocks_authority
+    - id: recovery.must_not_depend_on_dns_only
+      title: Recovery paths must not require DNS
+      severity: high
+      status: active
+      summary: |
+        Operators and controllers must recover cluster-critical state using direct control-plane endpoints when DNS is degraded. All resilience CLI commands must support direct controller IP/port. Controller-to-node critical operations must use node IPs from membership/state when DNS lookup fails.
+      protects:
+        files:
+            - golang/globularcli/resilience_cmds.go
+      forbidden_fixes:
+        - require_dns_for_dns_recovery
+        - require_service_discovery_when_discovery_is_unhealthy
+      required_tests:
+        - TestIngressCLIWorksWithDNSDisabled
+        - TestControllerToNodeSkipsDNSOnLookupFailure
+      related_failure_modes:
+        - recovery.dns_required_for_dns_recovery
+    - id: destructive_actions.require_explicit_guard
+      title: Destructive actions require explicit validated guard
+      severity: critical
+      status: active
+      summary: |
+        Service stop/delete/destructive-reconfigure actions require explicit validated intent including explicit_disabled=true, non-empty reason, and matching generation. Ambiguous disables (missing reason, stale generation, bad checksum) must be rejected and emit a doctor finding.
+      protects:
+        files:
+            - golang/node_agent/node_agent_server/internal/ingress/spec.go
+            - golang/cluster_controller/cluster_controller_server/ingress_spec_guard.go
+      forbidden_fixes:
+        - stop_runtime_from_ambiguous_disable
+        - wipe_state_without_approved_transition
+        - delete_runtime_data_from_ambiguous_state
+        - perform_destructive_action_from_inferred_intent
+      required_tests:
+        - TestMalformedDisableDoesNotStopRuntime
+        - TestExplicitValidDisableStopsRuntimeAndAuditable
+      related_failure_modes:
+        - destructive_actions.ambiguous_disable
+    - id: topology.reconciler_must_respect_safety_contract
+      title: Topology drift reconciler must check safety contracts
+      severity: critical
+      status: active
+      summary: |
+        Drift reconciliation must obey topology safety contracts before applying any topology/runtime change. Storage quorum viability, ingress participant validity, objectstore topology consistency, and controller profile/role placement must be checked. Unsafe actions are blocked individually while safe reconciles continue.
+      protects:
+        files:
+            - golang/cluster_controller/cluster_controller_server/repair_node_workflow.go
+      forbidden_fixes:
+        - infer_topology_from_local_disk
+        - reconcile_topology_without_contract
+        - apply_topology_drift_without_generation_check
+      required_tests:
+        - TestStaleMajorityTopologyRejectedWhileSafeActionsRun
+        - TestPerActionSafetyGateDeterministic
+      related_failure_modes:
+        - topology.unsafe_drift_applied
+    - id: services.drift_must_age_and_escalate
+      title: Service drift must age and escalate
+      severity: high
+      status: active
+      summary: |
+        Service desired/applied drift must age and escalate instead of remaining background noise. <2min=WARN, >5min=ERROR, >5min on critical service (ingress/dns/objectstore/controller/node-agent)=CRITICAL. Drift severity reflects urgency.
+      protects:
+        files:
+            - golang/cluster_doctor/cluster_doctor_server/collector/collector.go
+            - golang/cluster_doctor/cluster_doctor_server/rules/cluster_services_drift.go
+      forbidden_fixes:
+        - keep_drift_warning_forever_without_escalation
+      required_tests:
+        - TestDriftUnder2MinIsWarn
+        - TestDriftOver5MinIsError
+        - TestDriftOver5MinOnCriticalServiceIsCritical
+      related_failure_modes:
+        - services.drift_never_escalates
+    - id: pki.ca_metadata_must_be_published
+      title: PKI CA metadata must be published and registry-governed
+      severity: high
+      status: active
+      summary: |
+        PKI CA metadata must be governed by the critical-state registry and published under /globular/pki/ca while the cluster has a valid CA. /globular/pki/ca must appear in config.CriticalEtcdKeys and critical_state_registry with owner=cluster-controller, RestoreFromState, DeleteNeverAutomatic.
+      protects:
+        state:
+            - /globular/pki/ca
+        files:
+            - golang/config/critical_keys.go
+            - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+      forbidden_fixes:
+        - omit_pki_ca_from_critical_registry
+      required_tests:
+        - TestPKICANotPublishedFiresWhenCAMetadataNilAndNodesExist
+        - TestPKICANotPublishedClearsWhenCAPresent
+        - TestPKIRegistryEntryComplete
+      related_failure_modes:
+        - pki.ca_not_published
+    - id: runtime.installed_state_must_match_package_kind
+      title: Doctor runtime proof must match package kind
+      severity: high
+      status: active
+      summary: |
+        Installed state is not converged unless runtime proof matches package metadata. COMMAND packages must not be expected to have systemd units. Package kind is the single source of truth for runtime expectation — not a hardcoded list.
+      protects:
+        files:
+            - golang/cluster_doctor/cluster_doctor_server/rules/installed_state_runtime_mismatch.go
+      forbidden_fixes:
+        - hardcode_command_package_runtime_expectations_forever
+        - require_systemd_unit_for_command_package
+        - ignore_package_kind_in_runtime_proof
+      required_tests:
+        - TestCommandPackageWithNoUnitProducesNoFinding
+        - TestServicePackageWithNoUnitProducesFinding
+        - TestServicePackageWithActiveUnitProducesNoFinding
+      related_failure_modes:
+        - runtime.command_package_false_positive
+    - id: objectstore.desired_state_must_be_registry_governed
+      title: Objectstore desired state must be registry-governed
+      severity: critical
+      status: active
+      summary: |
+        Objectstore topology must have controller-owned desired state before any node starts or reconfigures MinIO. /globular/objectstore/config must be in config.CriticalEtcdKeys and critical_state_registry. Node-agent must hold LKG and not infer topology when key absent.
+      protects:
+        state:
+            - /globular/objectstore/config
+        files:
+            - golang/config/critical_keys.go
+            - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+      forbidden_fixes:
+        - start_minio_without_objectstore_desired_state
+        - infer_objectstore_topology_from_local_state
+        - omit_objectstore_config_from_critical_registry
+      required_tests:
+        - TestObjectstoreNoDesiredStateFiresWhenNilAndStorageNodes
+        - TestObjectstoreNoDesiredStateDoesNotFireWithNoStorageNodes
+        - TestObjectstoreRegistryEntryComplete
+      related_failure_modes:
+        - objectstore.no_desired_state_governance
+
+    # ── Self-awareness invariants ────────────────────────────────────────────
+    # These protect the awareness system itself from quality regressions.
+    # Checked by: globular awareness self-check
+    - id: awareness.no_false_silence_for_sensitive_tasks
+      title: Awareness must not be silent for sensitive architectural tasks
+      severity: high
+      status: active
+      summary: |
+        For tasks involving heartbeat authority, desired state writes, etcd quorum,
+        convergence loops, or restart storms, the awareness graph must surface at
+        least one invariant or failure mode. Silent preflight output for these task
+        classes is a regression — the graph is missing keyword coverage, context
+        aliases, or invariant nodes.
+      protects:
+        files:
+            - golang/awareness/preflight/preflight.go
+            - docs/awareness/context_aliases.yaml
+      forbidden_fixes:
+        - suppress_no_awareness_match_warning_without_fixing_root_cause
+      required_tests:
+        - TestSmokePassesOnKnownInvariants
+      related_failure_modes:
+        - awareness.false_silence_on_sensitive_task
+      implemented_by:
+        - file: golang/awareness/preflight/preflight.go
+          functions:
+            - Run
+            - buildWarnings
+          trust: verified
+        - file: docs/awareness/context_aliases.yaml
+          trust: declared
+      verified_by:
+        - TestSmokePassesOnKnownInvariants
+        - TestPreflightSurfacesAbsenceInvariantForMissingKey
+      violated_by:
+        - awareness.false_silence_on_sensitive_task
+      decision_guidance:
+        - "If preflight returns silent for heartbeat/desired-state/etcd/convergence tasks, add context_aliases.yaml entries mapping the missing keywords to known invariant IDs — do not suppress the NO_MATCH warning as a fix"
+
+    - id: awareness.audit_noise_must_be_triaged
+      title: Awareness audit warnings must be triaged, not silently accumulated
+      severity: medium
+      status: active
+      summary: |
+        Audit warnings that accumulate beyond the configured threshold (>3 in self-check)
+        indicate that invariant coverage has grown noisy. Each warning must be triaged:
+        either it reveals a real gap (promote to ERROR) or it is a false positive
+        (suppress explicitly with a suppression entry). Silently ignoring audit warnings
+        degrades the signal-to-noise ratio over time.
+      protects:
+        files:
+            - golang/awareness/enforce/audit.go
+            - golang/awareness/enforce/suppressions.go
+      forbidden_fixes:
+        - suppress_all_audit_warnings_without_reviewing_each
+      required_tests:
+        - TestSelfCheckReportsNoisySections
+      implemented_by:
+        - file: golang/awareness/enforce/audit.go
+          functions:
+            - Audit
+          trust: strict_verified
+        - file: golang/awareness/enforce/suppressions.go
+          functions:
+            - ApplySuppressions
+          trust: verified
+      verified_by:
+        - TestSelfCheckReportsNoisySections
+        - TestSuppressionHidesMatchingWarning
+      decision_guidance:
+        - "Every audit warning must be triaged to either a suppression entry (with expiry) or promoted to ERROR — adding suppressions in bulk without reviewing each is itself a violation of this invariant"
+
+    - id: awareness.graph_edges_need_provenance
+      title: Every awareness graph edge must have a traceable provenance
+      severity: medium
+      status: active
+      summary: |
+        Graph edges between awareness nodes (invariant, failure_mode, forbidden_fix,
+        source_file, symbol) must be created by a known extractor or a manually
+        authored YAML truth file — never speculatively. An edge without a traceable
+        source is a stale reference that will not survive a rebuild. Drift check
+        failures are the observable symptom.
+      protects:
+        files:
+            - golang/awareness/graph/edges.go
+            - golang/awareness/extractors/
+      forbidden_fixes:
+        - add_graph_edge_without_extractor_or_yaml_source
+      required_tests:
+        - TestGraphDriftNoStaleRefs
+      implemented_by:
+        - file: golang/awareness/graph/edges.go
+          functions:
+            - EdgeClass
+            - EdgeWeight
+          trust: strict_verified
+        - file: golang/awareness/extractors/manual/invariants.go
+          functions:
+            - LoadInvariants
+            - loadInvariant
+          trust: verified
+      authority:
+        - file: golang/awareness/graph/edges.go
+      verified_by:
+        - TestGraphDriftNoStaleRefs
+        - TestEdgePredicates_DecisionClassification
+        - TestEdgePredicates_StructuralClassification
+      decision_guidance:
+        - "Every edge must come from a YAML truth file (invariants.yaml, failure_modes.yaml) or a known extractor package — never add edges speculatively in test fixtures or inline in tool handlers"
+
+    - id: awareness.mcp_must_not_expose_promotion
+      title: MCP must not expose promote_proposal as a tool
+      severity: critical
+      status: active
+      summary: |
+        The MCP server (both awareness/mcp and golang/mcp) must never register a tool
+        named promote_proposal or any tool that writes to the approved awareness YAML
+        files (invariants.yaml, failure_modes.yaml, forbidden_fixes.yaml). Promotion
+        is an operator action — it must require explicit CLI invocation with human
+        review. MCP tool exposure bypasses this gate.
+      protects:
+        files:
+            - golang/awareness/mcp/learning_tool.go
+            - golang/mcp/
+      forbidden_fixes:
+        - register_promote_proposal_as_mcp_tool
+        - allow_mcp_to_write_awareness_yaml_files
+      required_tests:
+        - TestMCPCheckFailsWhenPromoteProposalExposed
+        - TestApproveProposalDoesNotPromote
+      implemented_by:
+        - file: golang/mcp/tools_awareness_learning.go
+          functions:
+            - registerAwarenessLearningTools
+          trust: strict_verified
+        - file: golang/awareness/selfcheck/selfcheck_test.go
+          functions:
+            - TestMCPCheckFailsWhenPromoteProposalExposed
+          trust: strict_verified
+      verified_by:
+        - TestMCPCheckFailsWhenPromoteProposalExposed
+        - TestApproveProposalDoesNotPromote
+      decision_guidance:
+        - "The approve_proposal MCP tool is read-only — it marks a proposal for human review but never writes to invariants.yaml or any approved YAML file; that requires explicit CLI 'globular awareness approve-proposal'"
+        - "If a new MCP tool is added that could write to docs/awareness/, it must first pass selfcheck TestMCPCheckFailsWhenPromoteProposalExposed"
+
+    - id: awareness.node_context_must_not_flood
+      title: Node context results must not flood with irrelevant matches
+      severity: medium
+      status: active
+      summary: |
+        GenerateAgentContext must return targeted results for a given task — not
+        every invariant in the graph. Results are considered noisy when more than
+        15 distinct invariant IDs are returned for a single task (unless the task
+        is explicitly broad like "full audit"). Node context flood dilutes signal
+        and increases agent token usage without improving diagnostic quality.
+      protects:
+        files:
+            - golang/awareness/analysis/agent_context.go
+      forbidden_fixes:
+        - return_all_invariants_for_every_task_without_filtering
+      required_tests:
+        - TestNodeContextSmokePasses
+      implemented_by:
+        - file: golang/awareness/analysis/agent_context.go
+          functions:
+            - GenerateAgentContext
+          trust: verified
+      verified_by:
+        - TestNodeContextSmokePasses
+      decision_guidance:
+        - "GenerateAgentContext filters by task-keyword relevance scoring — do not remove the result limit (currently 15) without measuring token-budget impact on agents using this tool"
+        - "A result count above 15 is a signal that the context alias or keyword matching is too broad, not that the limit is wrong"
+
+    - id: awareness.semantic_paths_must_explain_why
+      title: Semantic paths between awareness nodes must include a human-readable explanation
+      severity: medium
+      status: active
+      summary: |
+        ShortestPath results must include a non-empty Explanation field — a
+        prose description of why the path exists (what architectural constraint
+        connects the two nodes). A path without an explanation is a traversal
+        artifact, not actionable awareness. Agents using semantic paths to
+        diagnose issues need the explanation to avoid following spurious connections.
+      protects:
+        files:
+            - golang/awareness/semantic/path.go
+            - golang/awareness/semantic/why.go
+      forbidden_fixes:
+        - return_semantic_path_without_explanation
+      required_tests:
+        - TestSemanticPathIncludesExplanation
+      implemented_by:
+        - file: golang/awareness/semantic/path.go
+          functions:
+            - ShortestPath
+          trust: strict_verified
+        - file: golang/awareness/semantic/why.go
+          functions:
+            - BuildExplanation
+          trust: strict_verified
+      verified_by:
+        - TestSemanticPathIncludesExplanation
+        - TestWhyRelated_SymbolToFailureMode
+      decision_guidance:
+        - "A ShortestPath result with empty Explanation is a traversal artifact — check why.go BuildExplanation to see why the edge chain produces no human-readable narrative"
+        - "Agents must not follow a path they cannot explain; an unexplained path may cross domain boundaries that make it architecturally incorrect"
+
+    - id: awareness.knowledge.graph_rebuild_after_yaml_edit
+      title: Editing awareness YAML knowledge files requires a graph rebuild before the decision context is trustworthy
+      severity: high
+      status: active
+      summary: |
+        The awareness graph is compiled from YAML source files (invariants.yaml,
+        forbidden_fixes.yaml, causal_rules.yaml, failure_modes.yaml, decision_rules.yaml,
+        agent_playbooks.yaml, path_weights.yaml). When any of these files are edited,
+        the SQLite graph.db is stale until 'globular awareness build' runs again.
+        A stale graph returns degraded decision context — missing paths, stale forbidden_fixes,
+        and incomplete blind_spots. Editing knowledge YAML and relying on the old graph for
+        further decisions is a compounding error: the graph cannot reason about changes it
+        has not indexed.
+      protects:
+        configures_files:
+            - docs/awareness/knowledge/causal_rules.yaml
+            - docs/awareness/knowledge/agent_playbooks.yaml
+            - docs/awareness/knowledge/path_weights.yaml
+            - docs/awareness/invariants.yaml
+            - docs/awareness/forbidden_fixes.yaml
+            - docs/awareness/failure_modes.yaml
+            - docs/awareness/fix_cases.yaml
+            - docs/awareness/convergence_rules.yaml
+      forbidden_fixes:
+        - edit_awareness_yaml_without_graph_rebuild
+        - rely_on_stale_graph_after_knowledge_edit
+        - skip_awareness_preflight_before_yaml_edit
+      required_tests:
+        - TestLearnFromFix_DoesNotApplyWeightsWithoutApproval
+        - TestPromotedWeightChangeRequiresGraphRebuild
+        - TestWeightProposalIncludesReasonAndEvidence
+      related_failure_modes:
+        - awareness.graph.stale_context_drives_decision
+      implemented_by:
+        - file: golang/globularcli/awareness_cmds.go
+          functions:
+            - awarenessBuildCmd
+            - cleanBuild
+          trust: declared
+        - file: golang/globularcli/awareness_preflight_cmd.go
+          trust: declared
+      authority:
+        - file: docs/awareness/knowledge/causal_rules.yaml
+        - file: docs/awareness/knowledge/agent_playbooks.yaml
+        - file: docs/awareness/knowledge/path_weights.yaml
+        - file: docs/awareness/invariants.yaml
+        - file: docs/awareness/failure_modes.yaml
+      verified_by:
+        - TestLearnFromFix_DoesNotApplyWeightsWithoutApproval
+        - TestPromotedWeightChangeRequiresGraphRebuild
+      violated_by:
+        - awareness.graph.stale_context_drives_decision
+      decision_guidance:
+        - "Always run 'globular awareness build --clean' after editing knowledge YAML — not just 'build'. The upsert-only DB accumulates stale edges unless --clean deletes it first."
+        - "If graph was not rebuilt after an edit, set GraphIsStale=true in scoring context — it applies -20 penalty to all paths from that graph"
+
+    - id: awareness.knowledge.causal_rules_evidence_required
+      title: Causal rules must be derived from observed incidents, not hypothetical chains
+      severity: high
+      status: active
+      summary: |
+        Each entry in causal_rules.yaml must trace back to at least one real incident
+        (INC-YYYY-NNNN). A causal rule without incident evidence is a hypothesis, not
+        a scar. Hypothetical rules fill the graph with unverifiable edges and reduce
+        signal-to-noise for decision_context traversal. The confidence field must be
+        set conservatively (low/medium) until the chain has been validated across
+        multiple incidents.
+      protects:
+        configures_files:
+            - docs/awareness/knowledge/causal_rules.yaml
+      forbidden_fixes:
+        - add_causal_rule_without_incident_evidence
+        - set_causal_rule_confidence_high_without_verification
+        - backfill_causal_chain_without_symptoms
+      required_tests:
+        - TestCausalRulesFileExists
+        - TestCausalRulesHaveRequiredFields
+      implemented_by:
+        - file: golang/awareness/learning/validate.go
+          trust: declared
+        - file: docs/awareness/knowledge/causal_rules.yaml
+          trust: declared
+      authority:
+        - file: docs/awareness/knowledge/causal_rules.yaml
+      verified_by:
+        - TestCausalRulesFileExists
+        - TestCausalRulesHaveRequiredFields
+      decision_guidance:
+        - "Every causal rule in causal_rules.yaml must reference an incident_id (INC-YYYY-NNNN) — a rule without an incident is a hypothesis, not a scar"
+        - "Set confidence=low until the causal chain has been validated across multiple independent incidents; do not set confidence=high speculatively"
+        - "Hypothetical causal rules that are never validated must be removed, not left at low confidence indefinitely — stale rules pollute the decision graph"
+
+    - id: awareness.mcp.decision_context_no_bare_no_match
+      title: awareness.decision_context must never return bare NO_MATCH — always include coverage and blind_spots
+      severity: critical
+      status: active
+      summary: |
+        When the awareness graph has no decision paths for a given goal and changed files,
+        the response must NOT be a bare NO_MATCH. It must include: coverage (graph, runtime,
+        code_scan, raw_yaml), blind_spots explaining WHY there are no matches, and a
+        warning that NO_MATCH does not mean safe. A bare NO_MATCH response silently
+        implies safety — which is the opposite of the correct interpretation. Even in
+        degraded (no-graph) mode, the response must be structurally complete.
+      protects:
+        files:
+            - golang/mcp/tools_awareness_decision.go
+        symbols:
+            - decisionContextNoGraph
+            - buildDecisionContext
+            - buildDecisionBlindSpots
+      forbidden_fixes:
+        - return_bare_no_match_without_coverage
+        - treat_no_match_as_safe_for_high_risk_files
+        - skip_blind_spots_when_graph_unavailable
+      required_tests:
+        - TestDecisionContext_NoMatchStillReportsCoverage
+        - TestDecisionContext_FileEditReturnsDecisionPath
+        - TestDecisionAction_DangerousActionRequiresApproval
+        - TestDecisionIntegrity_DangerousActionMissingApprovalFails
+      implemented_by:
+        - file: golang/mcp/tools_awareness_decision.go
+          functions:
+            - decisionContextNoGraph
+            - buildDecisionContext
+            - buildDecisionBlindSpots
+          trust: strict_verified
+      verified_by:
+        - TestDecisionContext_NoMatchStillReportsCoverage
+        - TestDecisionContext_FileEditReturnsDecisionPath
+        - TestDecisionAction_DangerousActionRequiresApproval
+        - TestDecisionIntegrity_DangerousActionMissingApprovalFails
+      decision_guidance:
+        - "NO_MATCH is never safe — coverage and blind_spots must always be present even in no-graph degraded mode (decisionContextNoGraph)"
+        - "The warning field must contain 'NO_MATCH' explicitly so agents that pattern-match on this field get the correct signal"
+        - "confidence must never be 'high' when the graph is unavailable — use 'low' with a clear reason"
+
+    - id: awareness.graph.domain_classification_required
+      title: Every edge kind must be classified into a domain (decision/information/proof/risk/proposal)
+      severity: high
+      status: active
+      summary: |
+        The semantic scorer uses edge domain classification to distinguish decision paths
+        from information paths. A decision path (EdgeForbids, EdgeEnforces, EdgeRequiresTest)
+        must score higher than a pure information path (EdgeImplements, EdgeDocuments).
+        Unknown edge kinds default to the information domain — not decision — to prevent
+        unverified edges from being presented as operational guidance. New edge kinds added
+        to graph/edges.go must be classified in graph/domain.go before merging.
+      protects:
+        files:
+            - golang/awareness/graph/domain.go
+            - golang/awareness/semantic/score.go
+            - golang/awareness/semantic/weights.go
+        symbols:
+            - DomainForEdgeKind
+            - ScoreImpactPath
+            - RankPaths
+      forbidden_fixes:
+        - skip_edge_domain_classification
+        - default_new_edge_to_decision_domain
+        - ignore_forbidden_fix_edges_in_scoring
+      required_tests:
+        - TestGraphDomains_ForbiddenFixForbidsAction_IsDecision
+        - TestGraphDomains_UnknownEdge_DefaultsToInformation
+        - TestPathScoring_VerifiedDecisionPathBeatsDeclaredInformationPath
+        - TestPathScoring_ExplainsWeights
+      implemented_by:
+        - file: golang/awareness/graph/domain.go
+          functions:
+            - DomainForEdgeKind
+            - edgeDomains
+          trust: strict_verified
+        - file: golang/awareness/semantic/score.go
+          functions:
+            - ScoreImpactPath
+            - RankPaths
+          trust: strict_verified
+      authority:
+        - file: golang/awareness/graph/edges.go
+      verified_by:
+        - TestGraphDomains_ForbiddenFixForbidsAction_IsDecision
+        - TestGraphDomains_UnknownEdge_DefaultsToInformation
+        - TestPathScoring_VerifiedDecisionPathBeatsDeclaredInformationPath
+        - TestPathScoring_ExplainsWeights
+        - TestEdgePredicates_DecisionClassification
+      decision_guidance:
+        - "Any new edge constant in graph/edges.go MUST be added to edgeDomains in domain.go before merging — missing entries default to DomainInformation, silently making decision-class edges invisible to the scorer"
+        - "Do not default a new edge to DomainDecision to 'make it rank higher' — only edges that encode allowed/forbidden actions or required verification belong in the decision domain"
+
+    - id: awareness.weight_learning.human_approval_required
+      title: Path weight changes must be proposed via learn_from_fix and require explicit human approval before promotion
+      severity: high
+      status: active
+      summary: |
+        path_weights.yaml encodes the scoring heuristics used by RankPaths(). Arbitrary
+        weight changes alter which paths rank as "best known path" — directly affecting
+        what decisions the awareness system recommends. Weight changes must be proposed
+        via the learn_from_fix workflow, reviewed by a human, and promoted only after
+        explicit approval. After promotion, 'globular awareness build' is required to
+        recompile the graph with the new weights.
+      protects:
+        configures_files:
+            - docs/awareness/knowledge/path_weights.yaml
+        symbols:
+            - RankPaths
+            - ScoreImpactPath
+      forbidden_fixes:
+        - apply_weight_changes_without_human_approval
+        - promote_weights_without_graph_rebuild
+        - lower_penalty_for_invalid_trust_paths
+      required_tests:
+        - TestLearnFromFix_DoesNotApplyWeightsWithoutApproval
+        - TestPromotedWeightChangeRequiresGraphRebuild
+        - TestWeightProposalIncludesReasonAndEvidence
+        - TestDecisionIntegrity_WeightsConfigParses
+      implemented_by:
+        - file: golang/mcp/tools_awareness_learning.go
+          functions:
+            - learnFromFix
+          trust: verified
+        - file: golang/awareness/learning/promote.go
+          trust: declared
+        - file: golang/awareness/learning/validate.go
+          trust: declared
+      authority:
+        - file: docs/awareness/knowledge/path_weights.yaml
+      verified_by:
+        - TestLearnFromFix_DoesNotApplyWeightsWithoutApproval
+        - TestPromotedWeightChangeRequiresGraphRebuild
+        - TestWeightProposalIncludesReasonAndEvidence
+        - TestDecisionIntegrity_WeightsConfigParses
+      decision_guidance:
+        - "Weight proposals from learn_from_fix go to a pending queue (DomainProposal edges) — they never auto-apply to path_weights.yaml"
+        - "After human approves: (1) edit path_weights.yaml, (2) run 'globular awareness build --clean', (3) verify TestPathScoring_VerifiedDecisionPathBeatsDeclaredInformationPath still passes"
+        - "Never lower ContradictionPenalty (-100) or InvalidEdgePenalty (-100) — these are absolute safety gates, not tunable weights"
+
+    - id: awareness.preflight.required_before_edit
+      title: awareness.preflight or awareness.decision_context must run before editing any high-risk awareness file
+      severity: critical
+      status: active
+      summary: |
+        High-risk awareness files include: graph/domain.go, semantic/score.go,
+        semantic/weights.go, integrity/impact_path.go, mcp/tools_awareness_decision.go,
+        and all docs/awareness/knowledge/ YAML files. Before editing any of these,
+        the agent must call awareness.preflight (or awareness.decision_context) and
+        review the forbidden_actions and required_tests in the response. Skipping
+        preflight for these files is equivalent to editing the safety guardrails of
+        the safety system itself without reading them first.
+      protects:
+        files:
+            - golang/awareness/graph/domain.go
+            - golang/awareness/semantic/score.go
+            - golang/awareness/semantic/weights.go
+            - golang/awareness/integrity/impact_path.go
+            - golang/mcp/tools_awareness_decision.go
+            - golang/awareness/extractors/manual/invariants.go
+        symbols:
+            - TraverseImpactPaths
+            - ScoreImpactPath
+            - RankPaths
+      forbidden_fixes:
+        - skip_awareness_preflight_before_yaml_edit
+        - edit_impact_path_traversal_without_scoring_test
+        - remove_decision_edges_from_impact_kinds
+      required_tests:
+        - TestPathScoring_VerifiedDecisionPathBeatsDeclaredInformationPath
+        - TestDecisionContext_NoBareNoMatchWhenLowerTrustPathsExist
+        - TestDecisionPathType_PreEdit
+        - TestDecisionIntegrity_InvalidPathCannotRankHigh
+      implemented_by:
+        - file: golang/awareness/preflight/preflight.go
+          functions:
+            - Run
+          trust: strict_verified
+        - file: golang/mcp/tools_awareness_preflight.go
+          functions:
+            - registerAwarenessPreflightTools
+          trust: strict_verified
+      authority:
+        - file: docs/awareness/high_risk_files.yaml
+      verified_by:
+        - TestPathScoring_VerifiedDecisionPathBeatsDeclaredInformationPath
+        - TestDecisionContext_NoBareNoMatchWhenLowerTrustPathsExist
+        - TestDecisionPathType_PreEdit
+        - TestDecisionIntegrity_InvalidPathCannotRankHigh
+        - TestComputeRiskTier_HighRiskClassOverrides
+      decision_guidance:
+        - "For files in docs/awareness/high_risk_files.yaml, strict hook mode may block edits without preflight — do not bypass with --no-verify or by removing the hook"
+        - "The preflight check is itself governed by this invariant — editing preflight.go requires running preflight first"
+        - "If preflight is unavailable (graph not built), use 'awareness.decision_context' with changed_files set to the specific files you intend to edit"
+
+    - id: awareness.impact_analysis.explain_path_required
+      title: ExplainImpactByFile must return graph path traces and missing-link suggestions
+      severity: high
+      status: active
+      summary: |
+        The impact analysis engine (ExplainImpactByFile) is the core of the awareness
+        guardrail loop. It must: (1) return ExplainedFinding entries with full edge path
+        traces for every impacted invariant, forbidden fix, and required test; (2) mark
+        mandatory=true for forbidden fixes and paths through enforces/requires_test edges;
+        (3) report missing_links when a file has no graph edges, with pattern-based
+        suggestions about which invariant the file likely implements. Without path traces,
+        the output is unactionable — an agent cannot distinguish a critical mandatory
+        violation from a weak informational hit.
+      protects:
+        files:
+            - golang/awareness/analysis/impact.go
+        symbols:
+            - ExplainImpactByFile
+            - detectMissingLinks
+            - ExplainedFinding
+            - ExplainedImpactResult
+      forbidden_fixes:
+        - return_impact_finding_without_graph_path
+        - omit_missing_links_when_file_has_no_edges
+        - mark_forbidden_fix_as_non_mandatory
+      required_tests:
+        - TestExplainImpactByFile_ReturnsMissingLinks
+        - TestExplainImpactByFile_MandatoryForbiddenFix
+        - TestRejectInvariantWithMissingRequiredTest
+      implemented_by:
+        - file: golang/awareness/analysis/impact.go
+          functions:
+            - ExplainImpactByFile
+            - detectMissingLinks
+          trust: strict_verified
+      verified_by:
+        - TestExplainImpactByFile_ReturnsMissingLinks
+        - TestExplainImpactByFile_MandatoryForbiddenFix
+        - TestRejectInvariantWithMissingRequiredTest
+      decision_guidance:
+        - "missing_links are as important as hits — a file with no graph edges is likely implementing an invariant without declaring it, which is a coverage gap"
+        - "Mandatory findings (from forbidden_fix and enforces edges) must be presented first — they are not equal weight to informational findings"
+        - "Path traces let the agent understand WHY a file is impacted — without them, the agent cannot determine if the impact is real or transitive noise"
+
+    - id: awareness.cli.build_clean_required_after_yaml_edit
+      title: globular awareness build must use --clean after YAML knowledge edits to prevent stale edge accumulation
+      severity: high
+      status: active
+      summary: |
+        The awareness build command uses SQLite upsert (AddNode/AddEdge). This means
+        edges from a previous build are never removed unless the DB is deleted first.
+        If an invariant's 'files:' list is changed to 'configures_files:', the old
+        'implements' edge survives in graph.db and corrupts impact path traversal.
+        The '--clean' flag deletes graph.db before building, ensuring edge precision.
+        It must be used any time invariants.yaml or other knowledge YAML files change
+        the file-to-invariant edge semantics.
+      protects:
+        files:
+            - golang/globularcli/awareness_cmds.go
+        symbols:
+            - awarenessBuildCmd
+            - cleanBuild
+      forbidden_fixes:
+        - edit_awareness_yaml_without_graph_rebuild
+        - rebuild_awareness_graph_without_clean_after_yaml_edit
+      required_tests:
+        - TestAwarenessBuildCleanRemovesOldDB
+        - TestLearnFromFix_DoesNotApplyWeightsWithoutApproval
+      implemented_by:
+        - file: golang/globularcli/awareness_cmds.go
+          functions:
+            - awarenessBuildCmd
+            - cleanBuild
+          trust: declared
+      verified_by:
+        - TestAwarenessBuildCleanRemovesOldDB
+      decision_guidance:
+        - "Use 'globular awareness build --clean' not just 'build' when any knowledge YAML changes the semantic meaning of file-to-invariant edges (e.g., changing 'files:' to 'configures_files:') — bare 'build' leaves stale edges in graph.db"
+        - "The --clean flag deletes graph.db entirely before rebuilding — it is safe to use after every YAML edit, not just semantic changes"
+
+    - id: awareness.ci.impact_ci_enforces_required_tests
+      title: awareness impact-ci must exit 1 when required tests are missing for changed files
+      severity: critical
+      status: active
+      summary: |
+        The CI enforcement command (awareness impact-ci) is the automated guardrail
+        that prevents merging code that implements invariants without their required
+        tests. It must: (1) run ExplainImpactByFile for each changed file; (2) verify
+        that all required_tests referenced by impacted invariants exist on disk;
+        (3) exit 1 with an actionable graph-path-annotated error message when tests
+        are missing. Without this, the entire invariant→test enforcement chain has no
+        automated enforcement.
+      protects:
+        files:
+            - golang/globularcli/awareness_impact_ci_cmd.go
+        symbols:
+            - awarenessImpactCICmd
+            - verifyGapTestsDirs
+      forbidden_fixes:
+        - skip_required_test_check_in_ci
+        - exit_0_on_missing_mandatory_tests
+      required_tests:
+        - TestAwarenessImpactCI_ExitsOneOnMissingTest
+        - TestAwarenessImpactCI_PassesWhenTestsPresent
+      implemented_by:
+        - file: golang/globularcli/awareness_impact_ci_cmd.go
+          functions:
+            - awarenessImpactCICmd
+            - verifyGapTestsDirs
+          trust: declared
+      verified_by:
+        - TestAwarenessImpactCI_ExitsOneOnMissingTest
+        - TestAwarenessImpactCI_PassesWhenTestsPresent
+      decision_guidance:
+        - "impact-ci is the final automated gate — it enforces that required_tests listed in invariants.yaml actually exist on disk before merge"
+        - "Never exit 0 when required tests are missing, even as a 'temporary workaround' — this breaks the invariant→test→CI enforcement chain entirely"
+        - "The exit code must be 1 (not panic, not 2) so CI systems can distinguish 'test missing' from 'tool crashed'"
+
+
+    # ── File service invariants (Phases 4-6, 8) ──────────────────────────────
+
+    - id: file.authz.streaming_write_path_must_be_authorized_before_data_write
+      title: Client-streaming file writes must resolve and authorize the destination path before any storage write
+      severity: critical
+      status: active
+      summary: |
+        SaveFile and UploadFile are client-streaming RPCs. The destination path is
+        sent in the first message of the stream. Authorization must be resolved for
+        that path BEFORE writing any storage content. If the server begins writing
+        to storage before the path is known and authorized, an attacker can inject
+        data into an arbitrary path by sending a pre-auth stream. The authorization
+        check must gate on the resolved path in the first chunk, not on a default
+        or empty path.
+      protects:
+        files:
+          - golang/file/file_server/file_ops.go
+        rpcs:
+          - file.FileService.SaveFile
+          - file.FileService.UploadFile
+      forbidden_fixes:
+        - write_stream_data_before_resolving_authorized_path
+        - authorize_savefile_using_empty_or_default_path
+        - skip_authz_for_streaming_rpc_because_path_is_in_first_message
+      required_tests:
+        - TestSaveFileAuthorizesPathBeforeWrite
+        - TestSaveFileRejectsDataBeforePath
+        - TestSaveFileRejectsMissingPath
+
+    - id: file.path.normalization_must_not_escape_virtual_roots
+      title: All file paths must be normalized and constrained to approved virtual roots before storage access
+      severity: critical
+      status: active
+      summary: |
+        The file service is path-authoritative within virtual roots. All paths from
+        client requests must be: URL-decoded, cleaned (filepath.Clean equivalent),
+        converted to slash form, and verified to start with an approved virtual root
+        prefix BEFORE any storage operation. Skipping any of these steps enables
+        path traversal attacks that can read or write files outside the virtual root.
+      protects:
+        files:
+          - golang/file/file_server/file_ops.go
+          - golang/file/file_server/dir_ops.go
+          - golang/file/file_server/storage_helpers.go
+          - golang/file/file_server/path_util.go
+      forbidden_fixes:
+        - accept_raw_path_without_normalization
+        - use_string_prefix_as_authority_boundary_without_cleaning
+        - allow_parent_traversal_segments
+      required_tests:
+        - TestPathNormalizationRejectsTraversal
+        - TestPathNormalizationRejectsEncodedTraversal
+        - TestPathNormalizationKeepsUserRootBoundary
+
+    - id: file.path.delete_must_not_accept_root_or_parent_escape
+      title: Delete operations must reject empty path, root path, parent traversal, or malformed absolute paths
+      severity: critical
+      status: active
+      summary: |
+        DeleteFile and DeleteDir call os.Remove or os.RemoveAll after path
+        resolution. These operations must reject: empty string, "/", paths
+        containing ".." after cleaning, and paths that resolve outside the
+        virtual root. A single missing check can result in recursive deletion
+        of the filesystem root or the service binary itself.
+      protects:
+        files:
+          - golang/file/file_server/file_ops.go
+          - golang/file/file_server/dir_ops.go
+      forbidden_fixes:
+        - call_remove_all_on_unsanitized_user_path
+        - treat_empty_path_as_current_directory
+        - allow_delete_of_virtual_root
+      required_tests:
+        - TestDeleteRejectsRootAndEmptyPath
+        - TestDeleteRejectsParentTraversal
+
+    - id: file.archive.extraction_must_prevent_zip_slip
+      title: Archive extraction must reject entries that escape the destination directory
+      severity: critical
+      status: active
+      summary: |
+        Archive extraction (zip, tar, etc.) must validate every entry path against
+        the destination directory prefix AFTER cleaning. An attacker can craft an
+        archive with entries like "../../etc/cron.d/evil" that extract outside the
+        intended destination. This is the classic zip slip vulnerability. Every
+        archive entry must be cleaned and verified to be a child of the destination
+        before the file is created.
+      protects:
+        files:
+          - golang/file/file_server/file_ops.go
+      forbidden_fixes:
+        - join_archive_entry_without_clean_boundary_check
+        - trust_archive_entry_names
+      required_tests:
+        - TestArchiveExtractionRejectsZipSlip
+
+    - id: file.upload.url_must_not_enable_ssrf
+      title: URL-based file upload must restrict protocols and block private/metadata network targets
+      severity: high
+      status: active
+      summary: |
+        UploadFile accepts a URL source. The server must validate the URL before
+        fetching: only HTTPS (or explicitly allowed schemes) may be used; loopback,
+        link-local (169.254.x.x), private RFC1918 addresses, and cloud metadata
+        endpoints (169.254.169.254) must be blocked. Without this, an attacker can
+        use the file service as a proxy to scan the cluster network (SSRF).
+      protects:
+        files:
+          - golang/file/file_server/file_ops.go
+      forbidden_fixes:
+        - fetch_arbitrary_url_from_cluster_network
+        - allow_file_scheme_in_upload_url
+        - allow_metadata_ip_upload_target
+      required_tests:
+        - TestUploadRejectsUnsafeURLTargets
+        - TestUploadAllowsSafeHTTPSTarget
+
+    - id: file.public_dir.authority_must_come_from_cluster_registry
+      title: Public directory routing must use the cluster public directory authority, not local inference
+      severity: high
+      status: active
+      summary: |
+        The file service's public proxy serves files from registered public
+        directories. The list of valid public directories must come from the
+        cluster registry (etcd), not from local filesystem inference. Inferring
+        public directories locally allows an operator to bypass the registry and
+        serve arbitrary paths as public content — breaking the authoritative
+        cluster-wide routing model.
+      protects:
+        files:
+          - golang/file/file_server/public_proxy.go
+          - golang/file/file_server/server.go
+      forbidden_fixes:
+        - infer_public_dir_authority_from_local_path_only
+        - bypass_cluster_public_directory_registry
+      required_tests:
+        - TestPublicDirAuthorityUsesClusterRegistry
+
+    - id: service.dependencies.discovered_calls_must_be_classified
+      title: Every service client constructed in service code must be classified as declared/optional/background/test
+      severity: high
+      status: active
+      summary: |
+        When a service instantiates a client for another service (rbac, authentication,
+        event, etc.), that dependency must be classified in the service's awareness
+        contract (awareness.yaml). Unclassified dependencies are invisible to the
+        dependency ordering system — they may be treated as optional when they are
+        required, or as required when they are background-only. This can cause silent
+        startup failures or unnecessary blocking.
+      protects:
+        files:
+          - golang/file/file_server/server.go
+      forbidden_fixes:
+        - adding_service_client_without_dependency_classification
+        - making_background_dependency_startup_required_without_reason
+        - hiding_required_runtime_dependency_from_package_manifest
+      required_tests:
+        - TestFileServiceDependenciesClassified
+        - TestDiscoveredDependenciesAreDeclaredOrClassified
+
+    - id: file.identity.grpc_service_name_must_match_tls_and_registry_identity
+      title: File service runtime identity must match proto service name, registry name, and TLS certificate SANs
+      severity: high
+      status: active
+      summary: |
+        The file service registers under a name in etcd and presents a TLS
+        certificate. The TLS server name used by clients must match the name
+        in the certificate's SANs. The service registry name must match the
+        proto service name (file.FileService). Mismatches between any of these
+        three identities cause TLS verification failures for clients — a silent
+        misconfiguration that appears as a "certificate mismatch" error and not
+        as a configuration error.
+      protects:
+        files:
+          - golang/file/file_server/server.go
+      forbidden_fixes:
+        - disable_tls_verification_to_fix_file_client_connection
+        - use_localhost_server_name_for_cluster_dial
+        - ignore_certificate_san_mismatch
+      required_tests:
+        - TestFileServiceTLSIdentityMatchesRegistry
+        - TestFileClientUsesResolvedServerName
+
+    - id: day1.awareness_bundle_required
+      title: A node must not reach workload_ready without a verified awareness bundle matching the active release
+      severity: critical
+      status: active
+      summary: |
+        The awareness bundle (kind=AWARENESS_BUNDLE) is a compiled release artifact containing
+        the awareness graph.db, YAML knowledge files (services, failure modes, invariants,
+        guardrails), and failuregraph seeds. It is built once on the release machine and
+        distributed through the repository — same authority chain as service packages.
+
+        A joining node must fetch and install the bundle before advancing past the
+        awareness_ready bootstrap phase. MCP reads the graph from the installed bundle
+        (/var/lib/globular/awareness/current/graph.db). Without the bundle, MCP operates
+        in degraded mode and cannot classify failures or run architecture-sensitive preflight.
+
+        The controller enforces this gate: if the bundle is not installed within the
+        bootstrapPhaseTimeout window, the node advances anyway (degraded, not blocked) to
+        avoid making awareness a hard cluster dependency. The gap is recorded and surfaced
+        via health_pulse as AWARENESS_BUNDLE_MISSING.
+      protects:
+        state:
+          - /globular/nodes/{node_id}/packages/AWARENESS_BUNDLE/globular-awareness-bundle
+          - /var/lib/globular/awareness/current/manifest.json
+        files:
+          - golang/cluster_controller/cluster_controller_server/bootstrap_phases.go
+          - golang/cluster_controller/cluster_controller_server/state.go
+          - golang/node_agent/node_agent_server/awareness_bundle.go
+          - golang/node_agent/node_agent_server/heartbeat.go
+          - golang/mcp/tools_awareness.go
+        symbols:
+          - BootstrapAwarenessReady
+          - FetchAndInstallAwarenessBundle
+          - LoadInstalledAwarenessBuildID
+          - bootstrapAwarenessKey
+      enforcement: |
+        - Node-agent fetches the latest AWARENESS_BUNDLE from the repository every 5 minutes
+          (syncTicker) and installs it to /usr/local/share/globular/awareness/<build_id>/.
+        - Node-agent reports installed build_id in InstalledBuildIds["awareness_bundle"].
+        - Controller waits for InstalledBuildIds["awareness_bundle"] != "" at awareness_ready.
+        - MCP prefers /var/lib/globular/awareness/current/graph.db (bundle path) over legacy paths.
+        - Phase times out after bootstrapPhaseTimeout and advances with degraded awareness.
+      forbidden_fixes:
+        - skip_awareness_ready_phase_entirely
+        - hardcode_graph_db_path_on_non_dev_node
+        - treat_empty_installed_build_ids_awareness_bundle_as_ok
+        - load_graph_from_repo_checkout_on_cluster_node
+        - merge_compiled_knowledge_with_runtime_evidence_in_same_directory
+      required_tests:
+        - TestAwarenessBundleInstallSetsCurrentSymlink
+        - TestHeartbeatReportsAwarenessBuildID
+        - TestBootstrapAwarenessReadyAdvancesOnBuildID
+        - TestBootstrapAwarenessReadyTimesOutGracefully
+        - TestMCPLoadsBundlePathFirst
+
+    - id: day1.scylla_dependency_gate
+      status: active
+      severity: critical
+      summary: >
+        A node must not be marked WORKLOAD_READY or DAY1_COMPLETE while Scylla is expected
+        on that node but not locally ready. The evidence pipeline (awareness/evidence package)
+        classifies this state as JOINED_BUT_DEPENDENCY_BLOCKED and blocks further Day-1 progression.
+      rationale: |
+        ScyllaDB is the metadata backend for workflow, event, resource, and repository services.
+        If Scylla is not ready, all four subsystems will fail on first use. Marking the node
+        workload-ready before Scylla is stable causes silent, hard-to-diagnose cascading failures.
+        The awareness evidence classifier enforces this gate locally so MCP can surface the
+        exact blocker without requiring cluster connectivity.
+
+        Evidence sources checked:
+          - systemd ActiveState for scylla-server.service
+          - port 9042 listener state
+          - SCYLLA_CQL_UNREACHABLE RuntimeFact from the normalizer
+
+        Classification: JOINED_BUT_DEPENDENCY_BLOCKED
+      protects:
+        state:
+          - /var/lib/globular/awareness/runtime/latest_snapshot.json
+          - /var/lib/globular/awareness/runtime/facts.jsonl
+        files:
+          - golang/awareness/evidence/classifier.go
+          - golang/awareness/evidence/normalizer.go
+          - golang/awareness/evidence/day1.go
+          - golang/mcp/tools_awareness_evidence.go
+        symbols:
+          - Classifier.Classify
+          - Normalizer.Normalize
+          - Day1Verdict
+          - LevelScyllaReady
+          - LevelWorkloadReady
+          - LevelDay1Complete
+          - ClassJoinedButDependencyBlocked
+      enforcement: |
+        - Classifier sets Readiness[LevelScyllaReady]=false when SCYLLA_CQL_UNREACHABLE is present.
+        - Classifier sets Readiness[LevelWorkloadReady]=false when Scylla is not ready.
+        - Classifier sets Readiness[LevelDay1Complete]=false when Scylla is not ready.
+        - Verdict is BLOCK with Classification=JOINED_BUT_DEPENDENCY_BLOCKED.
+        - MCP tool awareness.day1_classify_node surfaces this verdict.
+        - Controller must not advance past awareness_ready to workload_ready on a BLOCK verdict.
+      forbidden_fixes:
+        - mark_node_day1_complete_before_scylla_ready
+        - dispatch_scylla_backed_workloads_while_classification_is_joined_but_dependency_blocked
+        - retry_dependent_services_indefinitely_without_checking_scylla_gate
+        - wipe_scylla_data_automatically
+        - skip_scylla_port_check_in_classifier
+      required_tests:
+        - TestClassifierBlocksWhenScyllaFailed
+        - TestClassifierBlocksWhenScyllaPortClosed
+        - TestNormalizerEmitsScyllaCQLUnreachableOnFailedUnit
+        - TestDay1ClassifyNodeMCPToolReturnsBLOCKForScyllaDown
+        - TestAwarenessBundleMissingClassificationOnFirstJoin
+
+    - id: awareness.auto_install_requires_verification
+      title: A node may auto-install a missing awareness bundle only when the candidate matches the active release-index and passes integrity verification
+      severity: critical
+      status: active
+      summary: |
+        Phase C/D contract for the awareness bundle subsystem. Runtime nodes
+        may detect missing/stale/mismatched bundles and auto-fetch from
+        trusted cluster sources, but they MUST NOT install anything that
+        does not exactly match the active release-index version + build_id,
+        does not pass tar-safety + sha256 verification, and was not pulled
+        over a TLS channel verified against the cluster CA.
+
+        "Automatic ensure, not automatic trust." The node may keep trying
+        sources with bounded backoff while it stays in
+        AWARENESS_BUNDLE_MISSING / STALE / MISMATCH, but every install path
+        flows through the same set of safety checks. There is no fast-path
+        bypass for emergency installs.
+      protects:
+        state:
+            - /var/lib/globular/awareness/current
+            - /var/lib/globular/awareness/installed/<version>/<build_id>/
+            - /globular/mcp/nodes/<node-id>           # peer registry — used for source discovery
+        files:
+            - golang/awareness/bundlesync/verify.go
+            - golang/awareness/bundlesync/tarsafe.go
+            - golang/awareness/bundlesync/install.go
+            - golang/awareness/bundlesync/pull.go
+            - golang/awareness/bundlesync/discovery.go
+            - golang/awareness/bundlesync/ensure.go
+            - golang/awareness/bundlesync/freshness.go
+            - golang/awareness/evidence/classifier.go
+            - golang/awareness/evidence/normalizer.go
+            - golang/mcp/tools_awareness_evidence.go
+            - golang/mcp/tools_awareness_bundle_serve.go
+            - golang/mcp/tools_awareness_bundle_freshness.go
+            - golang/globularcli/awareness_sync_cmds.go
+        symbols:
+            - VerifyBundle
+            - VerifyManifest
+            - VerifyBundleSHA256
+            - ValidateTarSafe
+            - ExtractTarSafe
+            - InstallBundle
+            - PullBundle
+            - CheckAwarenessFreshness
+            - DiscoverSources
+            - EnsureAwarenessBundle
+            - EnsureLoop
+            - LevelAwarenessReady
+            - ClassAwarenessBundleMissing
+            - ClassAwarenessBundleMismatch
+            - ClassAwarenessBundleStale
+            - ClassAwarenessBundleSchemaUnsupported
+            - ClassAwarenessBundleVerifyFailed
+            - ClassAwarenessBundleSourceUnavailable
+      enforcement: |
+        - VerifyBundle runs manifest verification, tar-safety scan, and
+          sha256 verification before any filesystem mutation outside staging.
+        - PullBundle requires a non-nil ClusterCAPool. Nil pool returns
+          ErrPeerTLSUnverified before any network call. There is no
+          InsecureSkipVerify path for authoritative bundle installs.
+        - InstallBundle re-runs Verify before extracting. Extraction goes
+          to a unique staging dir; only after validateExtracted passes does
+          the staging tree atomically rename into the immutable versioned
+          path; only after that does the current symlink switch via tmp-then-
+          rename. Crash between rename and symlink swap is recoverable
+          (idempotent re-run completes the swap).
+        - ExtractTarSafe re-classifies every entry per ValidateTarSafe rules
+          during extraction. First unsafe entry stops extraction and removes
+          the staging tree.
+        - DiscoverSources filters peers by build_id match (and optional
+          cluster_id, recency, RUNNING status) before they are even tried.
+        - EnsureAwarenessBundle never inherits trust from a peer's claim;
+          PullBundle re-verifies the manifest against the caller's expected
+          (version, build_id) regardless of what discovery selected.
+        - Classifier.Classify sets Readiness[LevelAwarenessReady]=false when
+          the bundle is missing, stale, mismatched, schema-unsupported, or
+          verification-failed. Architecture-sensitive classifications
+          (SCYLLA_NOT_READY, ETCD_NOT_READY, etc.) are checked AFTER the
+          bundle gates; a stale graph cannot classify a runtime fault.
+        - DAY1_COMPLETE depends on AWARENESS_READY: a node never reports
+          DAY1_COMPLETE while the bundle is anything other than READY.
+      forbidden_fixes:
+        - install_bundle_whose_build_id_differs_from_release_index
+        - derive_build_id_from_bundle_filename
+        - install_bundle_with_unsupported_schema_version
+        - skip_sha256_verification_to_recover_a_pull
+        - install_bundle_pulled_over_unverified_tls
+        - extract_tar_entries_with_absolute_paths_or_traversal
+        - mark_awareness_ready_after_failed_verification
+        - mark_day1_complete_with_stale_or_missing_bundle
+        - rebuild_graph_on_runtime_node_to_recover_from_stale
+        - bypass_atomic_install_to_speed_up_recovery
+        - delete_prior_active_bundle_on_install_to_save_disk
+        - treat_a_node_serving_a_bundle_as_proof_the_bundle_is_trusted
+      required_tests:
+        - TestValidBundlePasses
+        - TestWrongVersionFails
+        - TestWrongBuildIDFails
+        - TestWrongSHA256Fails
+        - TestUnsupportedSchemaFails
+        - TestTarTraversalFails
+        - TestAbsoluteTarPathFails
+        - TestSymlinkEscapeFails
+        - TestDeviceFileFails
+        - TestExistingCurrentUntouchedOnFailure
+        - TestInstallBundleFreshInstall
+        - TestInstallBundleIdempotentReinstall
+        - TestInstallBundleVerifyFailureNoInstall
+        - TestInstallBundleUnsafeTarEntryNoInstall
+        - TestInstallBundleRecoversFromCrashAfterRename
+        - TestPullBundleHappyPath
+        - TestPullBundleRejectsWrongBuildID
+        - TestPullBundleRejectsUntrustedTLS
+        - TestPullBundleRejectsSHA256Mismatch
+        - TestPullBundleRequiresClusterCAPool
+        - TestPullBundleRejectsUnsafeTar
+        - TestPullBundleRejectsSchemaUnsupported
+        - TestEnsureLocalCacheFastPath
+        - TestEnsureSinglePeerSucceeds
+        - TestEnsureSequentialFallback
+        - TestEnsureAllPeersFail
+        - TestEnsureNoCandidates
+        - TestSpec1_MissingBundleAutoSyncFromTrustedPeer
+        - TestSpec2_WrongBuildIDRejected
+        - TestSpec3_UntrustedTLSSourceRejected
+        - TestSpec6_UnsafeTarRejected
+        - TestSpec7_InstallIsAtomic
+        - TestSpec8_SyncCommandEndToEnd
+        - TestDay1RefusesReadyWhenBundleMissing
+        - TestDay1RefusesReadyWhenBundleStale
+        - TestDay1RefusesReadyWhenBundleMismatched
+        - TestArchitectureClassificationBlockedByStaleBundle
+
+
+    - id: ops_knowledge.seed_integrity
+      title: Operational-knowledge seed entries in AI Memory must match the SHA256 stamped in the awareness bundle manifest
+      severity: warning
+      status: active
+      summary: |
+        Operational knowledge ships as YAML in `docs/operational-knowledge/`, gets bundled into
+        the signed awareness bundle, and is loaded into AI Memory at day-1 by the seeder workflow.
+        Each seed entry carries `provenance.source = "seed"` plus a `provenance.seed_sha256` that
+        the build tool stamps from the canonical-form YAML.
+
+        At runtime, the doctor MUST periodically verify: for each AI Memory entry where
+        provenance.source = "seed", does the stored content's canonical SHA256 still match the
+        seed_sha256 in the active awareness bundle's manifest? Drift means either the bundle
+        was tampered with post-install OR ai-memory's immutability layer failed to reject a
+        write to a seed entry. Both are integrity violations worth surfacing.
+
+        This invariant is ADVISORY (severity=warning), per `convergence.no_infinite_retry`.
+        It must not gate cluster reconciliation — the seed is for AI assistance, not for
+        cluster correctness. A drifted seed degrades AI session quality but does not break
+        the cluster.
+      protects:
+        state:
+            - /var/lib/globular/operational-knowledge/                # on-disk YAML cache
+            - /var/lib/globular/awareness/current/manifest.json       # bundle manifest with seed_sha256 entries
+            - "ai-memory rows where metadata.source = 'seed'"
+        files:
+            - docs/operational-knowledge/                              # source of truth
+            - golang/ai_memory/ai_memory_server/server.go              # immutability enforcement
+            - golang/awareness/bundlesync/install.go                   # bundle install includes seed dir
+            - golang/cluster_doctor/cluster_doctor_server/             # invariant runtime check
+        symbols:
+            - SeedEntry                          # struct (planned)
+            - SeederWorkflow                     # workflow (planned)
+            - VerifySeedIntegrity                # doctor check (planned)
+            - aiMemoryRejectsSeedMutation        # storage guard (planned)
+      enforcement: |
+        - Build pipeline computes seed_sha256 over canonical-form YAML for each entry; stamps
+          it into provenance.seed_sha256 in the bundled file; emits the same hash into the
+          awareness bundle manifest under entries[].seed_sha256.
+        - InstallBundle extracts docs/operational-knowledge/ to /var/lib/globular/operational-
+          knowledge/ as part of the atomic bundle install.
+        - SeederWorkflow runs once per cluster after ai-memory becomes verified. For each YAML
+          entry: compute SHA256, compare to manifest, abort the workflow with FAILED status on
+          mismatch. On match: upsert into ai-memory with metadata.source="seed",
+          metadata.seed_version, metadata.seed_sha256, metadata.immutable=true.
+        - ai-memory's Update and Delete RPCs MUST reject any request targeting an entry with
+          metadata.source = "seed" unless the gRPC principal is "seeder". Returns
+          PERMISSION_DENIED. Exception: the seeder workflow itself may upsert when the
+          seed_sha256 changes (bundle upgraded).
+        - Doctor invariant: every doctor cycle, list all ai-memory entries where source=seed.
+          For each: re-canonicalize the content, recompute SHA256, compare to the manifest.
+          Drift → emit ops_knowledge.seed_drift finding (severity=warning) with the entry id
+          and observed-vs-expected hashes. Never gates reconciliation.
+      forbidden_fixes:
+        - mutate_seed_entry_via_human_principal             # only the seeder may write seed entries
+        - silently_overwrite_drift_without_doctor_finding   # drift must always be visible
+        - circuit_breaker_block_reconciliation_on_drift     # advisory only, must not gate
+        - skip_sha256_verification_for_seed_load            # cryptographic check is the whole point
+      related_failure_modes:
+        - ops_knowledge.seed_drift_post_install
+        - ops_knowledge.unauthorized_seed_mutation
+        - ops_knowledge.seeder_workflow_skipped
+      implemented_by:
+        - file: golang/ai_memory/ai_memory_server/server.go
+          functions:
+            - aiMemoryRejectsSeedMutation
+        - file: golang/cluster_doctor/cluster_doctor_server/ops_knowledge_check.go
+          functions:
+            - VerifySeedIntegrity
+      required_tests:
+        - TestSeedEntryIsImmutableViaHumanPrincipal
+        - TestSeederWorkflowUpsertsOnHashChange
+        - TestSeederWorkflowAbortsOnHashMismatch
+        - TestDoctorEmitsDriftFindingButDoesNotGate
+        - TestSeedSha256IsCanonicalAndStable
+
+    - id: founding.quorum.three_nodes_required
+      title: First 3 nodes of any cluster MUST have profiles core+control-plane+storage to satisfy etcd / ScyllaDB / MinIO quorum
+      severity: critical
+      status: active
+      summary: |
+        Globular's three core stateful services (etcd, ScyllaDB, MinIO) all require a minimum
+        of 3 nodes to operate without single-point-of-failure. The first three nodes of any
+        cluster MUST therefore carry the `core`, `control-plane`, AND `storage` profiles.
+
+        Enforced at join in `enforceFoundingProfiles()` in cluster_controller and CANNOT be
+        bypassed. Also enforced on profile change: SetNodeProfiles refuses to remove `storage`
+        from a node if the cluster would drop below 3 storage-profile nodes.
+
+        Until founding quorum is met, the cluster is operating in degraded day-0 mode: etcd
+        single-node, no ScyllaDB quorum, MinIO standalone. Day-1 is not complete until all
+        three founding nodes are joined and verified.
+      protects:
+        state:
+            - "/globular/nodes/<id> with profiles list"
+            - "/globular/clustercontroller/state.Nodes profiles per node"
+        files:
+            - golang/cluster_controller/cluster_controller_server/founding_profiles.go
+            - golang/cluster_controller/cluster_controller_server/server.go
+        symbols:
+            - enforceFoundingProfiles
+            - SetNodeProfiles
+      enforcement: |
+        - Join RPC rejects a new node whose proposed profiles, when added to the existing
+          cluster, would leave fewer than 3 nodes carrying core+control-plane+storage.
+        - SetNodeProfiles applies the same check before persisting a profile change.
+        - Day-1 phase classifier remains at `infra_installing` until 3 fully-profiled nodes
+          are present and verified.
+      forbidden_fixes:
+        - allow_join_without_storage_profile_when_quorum_below_three
+        - bypass_founding_check_for_special_node_kinds
+      required_tests:
+        - TestJoinRefusedBelowFoundingQuorum
+        - TestSetNodeProfilesRefusesStorageRemovalBelowQuorum
+
+    - id: etcd.endpoint_reachability
+      title: Every Globular service must be able to reach its configured etcd endpoint at startup; no silent fallback
+      severity: critical
+      status: active
+      summary: |
+        Every service resolves its config from etcd at startup. If etcd is unreachable, the
+        service MUST error out — there is no silent fallback to defaults, env vars, or local
+        files. This is a corollary of the "etcd is the sole source of truth" rule.
+
+        On day-0 the etcd is a single-node deployment on the founding node. On day-1+ it is
+        a 3+ member cluster. The endpoint each service uses is read from `/etc/globular/`
+        local seed file at first boot, then from etcd thereafter.
+      protects:
+        state:
+            - /globular/system/config
+            - "/globular/services/<id>/config"
+        files:
+            - golang/config/etcd_client.go
+        symbols:
+            - GetEtcdClient
+            - resolveEtcdEndpoints
+      forbidden_fixes:
+        - silently_fall_back_to_localhost_when_etcd_unreachable
+        - swallow_etcd_unavailable_in_critical_startup_path
+        - cache_etcd_response_so_long_startup_succeeds_after_outage
+      required_tests:
+        - TestServiceErrorsWhenEtcdUnreachable
+        - TestNoFallbackToEnvVarConfig
+
+    - id: keepalived.health_gated_failover
+      title: keepalived MUST only advertise as MASTER when local services are healthy; failover triggered by health check failure
+      severity: warning
+      status: active
+      summary: |
+        Each keepalived-bearing node runs vrrp_script health checks (gateway responsive,
+        controller reachable). If checks fail, the node demotes itself by lowering its VRRP
+        priority via `weight`, causing another node to win the election and take the VIP.
+
+        This prevents a sick node from holding the VIP and routing external traffic to itself
+        while broken. A node with broken local gateway should LOSE the VIP, not keep it.
+      protects:
+        state:
+            - /etc/keepalived/keepalived.conf
+            - /globular/ingress/v1/spec
+            - "/globular/ingress/v1/status/<node-id>"
+        files:
+            - golang/node_agent/internal/supervisor/keepalived_render.go
+        symbols:
+            - renderKeepalivedConfig
+            - vrrpScriptForCluster
+      enforcement: |
+        - The keepalived config rendered by node-agent MUST include a vrrp_script block per
+          health-check target.
+        - The interval/fall/rise parameters MUST be tuned to detect failure within ~3-5
+          seconds without flapping on transient blips.
+        - The VRRP priority + weight MUST be sized so that a single failed check drops a
+          MASTER below the next BACKUP's priority.
+      forbidden_fixes:
+        - skip_vrrp_script_to_avoid_flapping
+        - hardcode_master_priority_so_one_node_always_wins
+      related_failure_modes:
+        - vip_contamination.node_routable_ip_returns_vip
+      required_tests:
+        - TestKeepalivedConfigContainsHealthScript
+        - TestUnhealthyMasterLosesPriorityBelowBackup
+
+    - id: repository.purge_must_not_delete_active_desired_builds
+      title: Repository purge / GC / delete MUST refuse a build_id referenced by active desired state
+      severity: critical
+      status: active
+      summary: |
+        A build_id pinned by any of /globular/resources/{ServiceDesiredVersion,
+        InfrastructureRelease, DesiredService, ServiceRelease}/* — either in
+        Spec.BuildID or Status.ResolvedBuildID — is referenced by Layer 2
+        (Desired). Deleting it from the repository orphans the controller's
+        intent and produces an install-storm against a build_id that can no
+        longer be resolved. DeleteArtifact, GC archive, SetArtifactState→REVOKED,
+        and any future purge path MUST consult collectDesiredBuildIDs and refuse
+        with a structured PurgeBlockedReason code
+        (RepositoryPurgeBlockedReferencedBuild_desired). force=true bypass is
+        permitted only when the caller has rolled desired state forward first.
+      protects:
+        state:
+            - /globular/resources/ServiceDesiredVersion/
+            - /globular/resources/InfrastructureRelease/
+            - /globular/resources/DesiredService/
+            - /globular/resources/ServiceRelease/
+        files:
+            - golang/repository/repository_server/reachability_guard.go
+            - golang/repository/repository_server/gc.go
+            - golang/repository/repository_server/artifact_handlers.go
+        symbols:
+            - checkDeletionSafety
+            - checkRevokeSafety
+            - collectDesiredBuildIDs
+            - ArchiveUnreachableArtifacts
+      enforcement: |
+        - collectDesiredBuildIDs MUST scan all four desired-state prefixes.
+        - checkDeletionSafety and checkRevokeSafety MUST return a structured
+          PurgeBlockedReason code (not just a string), and the caller MUST emit
+          an audit event (repository.delete_blocked / repository.revoke_blocked)
+          carrying the code so doctor can branch deterministically.
+        - GC reachability already merges installed+desired roots — guard the
+          import so future code that adds new desired-state shapes is forced
+          to update collectDesiredBuildIDs.
+      forbidden_fixes:
+        - delete_desired_build_id_to_make_purge_succeed
+        - bypass_safety_check_with_unconditional_force_true
+        - ignore_status.resolved_build_id_when_collecting_desired_roots
+      related_failure_modes:
+        - repository.desired_build_id_orphaned
+      required_tests:
+        - TestDeletionSafety_DesiredBuildID_IsBlocked
+        - TestRevokeSafety_DesiredBuildID_IsBlocked
+        - TestCollectDesiredBuildIDs_ScansAllFourPrefixes
+        - TestPurgeBlockedAuditEventEmitted
+
+    - id: repository.desired_build_id_must_resolve
+      title: Every active desired build_id MUST resolve to an installable repository artifact
+      severity: critical
+      status: active
+      summary: |
+        Desired-state records (ServiceDesiredVersion, InfrastructureRelease,
+        DesiredService, ServiceRelease) pin immutable build_ids. The repository
+        MUST be able to resolve every active pin to a manifest in the installable
+        set (publish_state=PUBLISHED + artifact_state ∈ {PUBLISHED, ""}); any
+        unresolvable pin is a DesiredBuildIdOrphaned condition that produces
+        cluster-wide install loops. resolveByBuildID MUST distinguish the
+        "manifest absent" case (codes.NotFound) from the "manifest demoted"
+        case (codes.FailedPrecondition with prefix DesiredBuildIdOrphaned) so
+        the node-agent installer can refuse local fallback for both, but with
+        distinct telemetry.
+      protects:
+        state:
+            - artifact identity (publisher + name + platform + channel + version + build_id + checksum)
+        files:
+            - golang/repository/repository_server/resolver.go
+            - golang/cluster_doctor/cluster_doctor_server/rules/repository_dns_invariants.go
+        symbols:
+            - resolveByBuildID
+            - repositoryDesiredBuildIDsResolve
+      enforcement: |
+        - resolveByBuildID's Scylla and MinIO paths MUST scan the catalog once,
+          then categorize results into success / orphan / not-found rather than
+          returning the same NotFound code for both error cases.
+        - Doctor rule repository.desired_build_ids_resolve cross-checks
+          /globular/resources/* against per-node InstalledBuildIds, fires
+          CRITICAL when any active desired build_id has never been installed
+          anywhere — the strongest evidence the repository has lost it.
+      forbidden_fixes:
+        - silent_fallback_to_latest_version_when_build_id_is_pinned
+        - return_NotFound_for_yanked_revoked_or_archived_manifests
+        - rebuild_repository_index_without_validating_against_desired_state
+      related_failure_modes:
+        - repository.desired_build_id_orphaned
+      required_tests:
+        - TestResolveByBuildIDOrphaned_ReturnsFailedPrecondition
+        - TestResolveByBuildIDAbsent_ReturnsNotFound
+        - TestDoctorRule_RepositoryDesiredBuildIDsResolve
+
+    - id: repository.artifact.installable_compound_predicate
+      title: Artifact installability requires publish_state AND artifact_state to both equal PUBLISHED
+      severity: critical
+      status: active
+      summary: |
+        An artifact is installable iff BOTH columns agree:
+          - publish_state == PUBLISHED  (lifecycle lifecycle gate, written by promoteToPublished)
+          - artifact_state == PUBLISHED (pipeline state gate, written by transitionArtifactState)
+        The legacy-empty fallthrough (artifact_state == "") is allowed only for rows that
+        predate the state machine; the backfill repairs them. Any non-empty artifact_state
+        other than PUBLISHED (BLOB_VERIFIED, MANIFEST_WRITTEN, BROKEN_*, QUARANTINED, REVOKED)
+        makes the artifact non-installable even when publish_state is PUBLISHED.
+        A "split-state" row (publish_state=PUBLISHED, artifact_state=BLOB_VERIFIED) appears in
+        discovery (ListArtifacts) as PUBLISHED but is rejected by resolveByBuildID as
+        DesiredBuildIdOrphaned — triggering an infinite install-retry storm on every node-agent
+        that holds a desired pin to that build_id. Join-order effect: the storm begins after
+        the first node installs the artifact and the post-install reconciler loop re-reads
+        artifact_state; subsequent nodes partially fail depending on workflow slot availability.
+      protects:
+        state:
+          - publish_state column (Scylla artifacts table)
+          - artifact_state column (Scylla artifacts table)
+        files:
+          - golang/repository/repository_server/publish_workflow.go
+          - golang/repository/repository_server/artifact_state.go
+          - golang/repository/repository_server/artifact_state_backfill.go
+        symbols:
+          - promoteToPublished
+          - transitionArtifactState
+          - isRowInstallable
+          - backfillArtifactStates
+      enforcement: |
+        - promoteToPublished MUST call BOTH UpdatePublishState(PUBLISHED) AND
+          transitionArtifactState(PipelinePublished) before returning success.
+          If either write fails, the artifact stays in VERIFIED state (not discoverable).
+        - isRowInstallable is the single canonical installability gate. It MUST be
+          used by ALL install paths: resolver, DownloadArtifact, GetArtifactVersions,
+          resolveLatestBuildNumber. No path may use publish_state alone as a proxy.
+        - backfillArtifactStates repairs stuck BLOB_VERIFIED rows on startup. Any row
+          with publish_state=PUBLISHED and artifact_state=BLOB_VERIFIED has a locally-present
+          blob — drive it forward to PipelinePublished.
+        - OPEN GAP: the doctor's RepositoryBuildIDIndex is built from ListArtifacts which
+          does not expose artifact_state in the ArtifactManifest proto. Split-state artifacts
+          (pub=PUBLISHED, art=BLOB_VERIFIED) pass buildIDIndexFromManifests silently, so
+          repository.desired_build_ids_resolve stays silent. Resolution requires adding
+          artifact_state to ArtifactManifest proto or a dedicated ListSplitStateArtifacts RPC.
+      writers:
+        publish_state:
+          - promoteToPublished (via UpdatePublishState)
+          - syncStateToScylla
+        artifact_state:
+          - promoteToPublished (via transitionArtifactState — REQUIRED)
+          - backfillArtifactStates (via transitionArtifactState — repair only)
+          - transitionArtifactState (internal state machine)
+      readers:
+        publish_state:
+          - ListArtifacts (discovery — display path)
+          - buildIDIndexFromManifests (doctor collector)
+          - IsInstallableByPin (publish_state only — NOT sufficient alone)
+        artifact_state:
+          - isRowInstallable (install gate — checks BOTH columns)
+          - resolveByBuildID (via isRowInstallable)
+          - DownloadArtifact (via isRowInstallableWithSignaturePolicy)
+          - GetArtifactVersions (install-path — via isRowInstallable)
+          - resolveLatestBuildNumber (via isRowInstallable)
+      forbidden_fixes:
+        - ignore_artifact_state_in_orphan_checks
+        - return_NotFound_for_yanked_revoked_or_archived_manifests
+        - increase_workflow_queue_capacity_to_hide_retry_storm
+        - special_case_late_joining_nodes_without_fixing_state_split
+      related_failure_modes:
+        - repository.desired_build_id_orphaned
+        - repository.compound_predicate_split
+      required_tests:
+        - TestPromoteToPublished_SetsArtifactStatePublished
+        - TestPromoteToPublished_ReturnsErrorWhenArtifactStateTransitionFails
+        - TestResolverFilter_ExcludesNonInstallableStates_BlobVerifiedIsRejected
+        - TestOrphanCheck_DoesNotDisagreeWithDiscovery
+
+    - id: repository.fallback_requires_manifest_and_checksum
+      title: Fallback sources MUST never fetch without manifest+checksum proof
+      severity: critical
+      status: active
+      summary: |
+        When ResolveArtifact fails for a pinned build_id, the node-agent must
+        NOT silently install a local pinned tarball whose checksum it cannot
+        verify against the repository manifest. Three cases:
+          - ErrBuildIDOrphaned  → repository explicitly demoted the build →
+                                  fallback FORBIDDEN (would install a build
+                                  the repository said "stop").
+          - ErrBuildIDNotFound  → repository has no manifest → no checksum to
+                                  verify against → fallback FORBIDDEN.
+          - ErrRepositoryUnreachable → transient → fallback permitted only if
+                                  the caller already has an independent
+                                  manifest/checksum proof.
+        Relaxing require_checksum on upstream mirrors to "fix" the install
+        storm is the canonical wrong fix.
+      protects:
+        files:
+            - golang/node_agent/node_agent_server/installer_api.go
+            - golang/node_agent/node_agent_server/internal/actions/artifact.go
+            - golang/repository/repository_server/resolver.go
+        symbols:
+            - resolveArtifactByBuildID
+            - artifactFetchAction.Apply
+            - InstallPackage
+            - ErrBuildIDOrphaned
+            - ErrBuildIDNotFound
+            - ErrRepositoryUnreachable
+      enforcement: |
+        - resolveArtifactByBuildID maps gRPC errors to the three sentinel error
+          types; callers MUST branch on errors.Is, never on string matching.
+        - InstallPackage MUST refuse fallback when the resolver error wraps
+          ErrBuildIDOrphaned or ErrBuildIDNotFound; the error message MUST
+          include RELEASE_BLOCKED_REPOSITORY_ORPHANED_BUILD_ID for the
+          workflow service to classify.
+        - Cache-decision matrix in artifact.fetch already requires expected_sha
+          OR a successful manifest lookup before reusing cached bytes; that
+          path stays unchanged.
+      forbidden_fixes:
+        - disable_require_checksum_to_allow_unverifiable_fallback
+        - blind_local_install_after_repository_returns_NotFound
+        - silently_install_pinned_tarball_when_manifest_missing
+      related_failure_modes:
+        - repository.desired_build_id_orphaned
+      required_tests:
+        - TestInstallerRefusesLocalFallbackOnOrphaned
+        - TestInstallerRefusesLocalFallbackOnNotFound
+        - TestInstallerAllowsLocalFallbackOnUnreachableWithCachedSHA
+
+    - id: dns.records_must_be_installed_and_runtime_healthy
+      title: A DNS record MUST point only at nodes where the promised service is installed AND runtime-healthy
+      severity: high
+      status: active
+      summary: |
+        Every record that promises a service (gateway.<domain>, api.<domain>,
+        dns.<domain>, scylla.<domain>, controller.<domain>,
+        _cluster-controller._tcp.<domain>, per-service SRV records) MUST be
+        gated by the 4-layer model:
+          desired (profile) AND installed (Layer 3) AND runtime healthy (Layer 4).
+        Nodes marked Draining or Quarantined are excluded regardless of
+        installed/health state. Per-node A/AAAA records (which describe the
+        NODE, not a service) are safe to publish from membership alone but
+        MUST be withdrawn when the node is Draining/Quarantined.
+      protects:
+        files:
+            - golang/cluster_controller/cluster_controller_server/dns_state.go
+            - golang/cluster_controller/cluster_controller_server/dns_readiness.go
+            - golang/cluster_controller/cluster_controller_server/dns_reconciler.go
+        symbols:
+            - NodeInfo.ServiceReady
+            - gateForService
+            - ComputeDesiredStateWithFunnels
+            - buildInstalledServiceSet
+            - buildRuntimeHealthySet
+      enforcement: |
+        - NodeInfo carries InstalledServices / RuntimeHealthy maps and
+          Draining / Quarantined flags. ComputeDesiredStateWithFunnels uses
+          gateForService to filter every service-bearing record group.
+        - When InstalledServices and RuntimeHealthy are both nil (cold start
+          / legacy callers), the gate falls through so bootstrap still works.
+          As soon as the heartbeat populates either map, the gate engages.
+        - The reconciler logs structured WITHDREW lines per group so operators
+          see the candidate funnel and can verify gating in action.
+      forbidden_fixes:
+        - publish_dns_from_desired_or_profile_state
+        - assume_installed_means_running
+        - fall_back_to_profile_when_health_data_arrives_late
+      related_failure_modes:
+        - dns.desired_ghost_records
+      required_tests:
+        - TestComputeDesiredState_PlannedNotInstalled_NoRecord
+        - TestComputeDesiredState_InstalledNotHealthy_NoRecord
+        - TestComputeDesiredState_HealthyNode_PublishesRecord
+        - TestComputeDesiredState_DrainingNode_WithdrawsRecords
+        - TestNodeInfo_ServiceReady_NilMaps_FallsThrough
+
+    - id: dns.wildcard_must_not_include_unhealthy_nodes
+      title: Wildcard (*.<domain>) and api.<domain> records MUST be gated identically to gateway.<domain>
+      severity: high
+      status: active
+      summary: |
+        The *.<domain> wildcard and api.<domain> alias both terminate at the
+        gateway. Their candidate set is identical to gateway.<domain> and MUST
+        be gated by the same rule: gateway service installed AND runtime-healthy
+        on each candidate node. A wildcard that includes a half-dead node
+        produces silent failures for every name the cluster resolves through
+        Envoy.
+      protects:
+        files:
+            - golang/cluster_controller/cluster_controller_server/dns_state.go
+        symbols:
+            - ComputeDesiredStateWithFunnels
+            - gateForService
+      enforcement: |
+        - gatewayKept derived once via gateForService("gateway", …); the
+          wildcard and api candidate sets reuse the same slice so divergence
+          is structurally impossible.
+        - Candidate funnel emits one entry per record name so the reconciler
+          log shows wildcard and gateway with identical kept/filtered counts.
+      forbidden_fixes:
+        - hardcode_wildcard_a_record_to_known_good_node
+        - skip_wildcard_gating_because_envoy_will_handle_dead_backend
+      related_failure_modes:
+        - dns.desired_ghost_records
+      required_tests:
+        - TestComputeDesiredState_WildcardExcludesUnhealthy
+        - TestComputeDesiredState_WildcardMatchesGatewayCandidateSet
+
+    - id: package.official_identity_immutable
+      title: Once an official stable (publisher, name, version, platform) is published, no different byte stream may claim that identity
+      severity: critical
+      status: active
+      summary: |
+        The official stable namespace (publisher=core@globular.io, channel=STABLE) is sealed.
+        After (version, platform) is published with a given digest, any upload to the same
+        (publisher, name, version, platform) tuple carrying a different digest must be rejected
+        with PermissionDenied before any write occurs. This prevents silent identity fraud
+        across clusters: two nodes cannot both claim to run "storage 1.2.43" while executing
+        different bytes. Official stable artifacts are immutable at the (version, platform)
+        granularity. The only way to publish different bytes is to publish a new version.
+      protects:
+        state:
+            - /globular/nodes/{node_id}/packages/{kind}/{name}
+        files:
+            - golang/repository/repository_server/local_publish_guard.go
+            - golang/repository/repository_server/artifact_handlers.go
+        symbols:
+            - enforceOfficialNamespaceSeal
+            - UploadArtifact
+      enforcement: |
+        enforceOfficialNamespaceSeal() is called from UploadArtifact before any write.
+        If the (publisher, name, version, platform) is already in the ledger with a
+        different digest, the upload returns PermissionDenied immediately. Idempotent
+        re-uploads (same digest) pass the seal. Non-official publishers and non-STABLE
+        channels are always allowed.
+      forbidden_fixes:
+        - change_official_digest_to_accept_local_build
+        - publish_local_build_as_official_stable_to_fix_mismatch
+        - strip_local_version_suffix_to_promote_without_official_rebuild
+      required_tests:
+        - TestLocalPublish1_OfficialStableSealedAgainstDifferentDigest
+        - TestLocalPublish1_OfficialStableAllowsSameDigest
+        - TestLocalPublish6_CrossClusterLocalCannotOverrideStable
+      related_failure_modes:
+        - package.identity_fraud_silent_override
+
+    - id: package.local_publish_requires_local_identity
+      title: Local/dev/hotfix builds must use a non-official publisher and a version with a local suffix
+      severity: high
+      status: active
+      summary: |
+        When an operator or developer builds a locally-modified package for testing, the
+        resulting artifact must not use the official stable identity. It must use:
+          - publisher != core@globular.io (e.g. local@<cluster-id>, org@<domain>)
+          - channel = DEV (local/dev) or CANDIDATE (hotfix)
+          - version with a local suffix: +local.<cluster>.<n>, -dev.<branch>.<sha>, or -hotfix.<n>
+        This prevents the local workbench part from masquerading as a catalog part. The
+        official release-index remains unchanged. After validation, a fix is promoted through
+        the official release pipeline, which assigns a new version, build_id, and digest.
+      protects:
+        files:
+            - golang/repository/repository_server/local_publish_guard.go
+        symbols:
+            - validateLocalIdentityRules
+            - FormatLocalVersion
+      enforcement: |
+        validateLocalIdentityRules() is called post-enrichment in UploadArtifact. It rejects:
+          Rule 1: official publisher + STABLE channel + local version suffix
+          Rule 2: official publisher + DEV channel (must use non-official publisher)
+        The CLI auto-appends local suffixes when --channel local/hotfix is set.
+      forbidden_fixes:
+        - allow_official_publisher_to_use_dev_channel
+        - strip_local_suffix_to_publish_as_official_stable
+        - skip_validateLocalIdentityRules_for_force_flag
+      required_tests:
+        - TestLocalPublish2_LocalVersionSuffixPassesIdentityRules
+        - TestLocalPublish2_OfficialPublisherCannotUseDEVChannel
+        - TestLocalPublish2_OfficialPublisherCannotUseLocalVersionSuffix
+        - TestLocalPublish2_FormatLocalVersion
+      related_failure_modes:
+        - package.identity_fraud_silent_override
+
+    - id: package.local_override_must_be_explicit
+      title: A local package override in desired state must carry explicit override metadata
+      severity: high
+      status: active
+      summary: |
+        When a cluster intentionally runs a local/dev/hotfix package build, the desired state
+        entry must carry explicit override fields so it is never silently confused with an
+        official package. Required fields: publisher (non-official), channel (DEV/CANDIDATE),
+        version with local suffix, and preferably based_on_build_id + patch_reason. The
+        controller must not treat this as normal official drift. The doctor must report it
+        as an intentional local override. The upgrade planner must warn that an official
+        upgrade may replace the local override.
+      protects:
+        state:
+            - /globular/resources/DesiredService/{name}
+        files:
+            - golang/cluster_controller/cluster_controller_server/release_reconciler.go
+            - golang/cluster_doctor/cluster_doctor_server/rules/local_override_rule.go
+        symbols:
+            - localOverrideActive
+      enforcement: |
+        The doctor rule package.local_override_active fires WARN when RepositoryVersionIndex
+        contains any version with a local suffix. This surfaces unintentional local builds
+        that were published without an explicit override command.
+      forbidden_fixes:
+        - silently_upgrade_over_local_override_without_warning
+        - treat_local_override_as_normal_drift
+        - delete_local_override_without_operator_confirmation
+      required_tests:
+        - TestLocalPublish3_OfficialBOMUnaffectedByLocalPublish
+        - TestLocalPublish4_OfficialSealDoesNotBlockLocalPublisher
+      related_failure_modes:
+        - package.silent_local_override_upgrade
+
+    - id: package.official_bom_read_only_under_local_override
+      title: The official BOM must not be mutated when a local package override is active
+      severity: critical
+      status: active
+      summary: |
+        When a local test package is published and a cluster intentionally runs it, the
+        official release-index (BOM) must remain unchanged. The effective cluster BOM is
+        computed as: official BOM + local override entries. The official BOM preserves the
+        GitHub release-index exactly. Local overrides are stored separately and can be removed
+        to return the effective BOM to the official state. No operation on a local override
+        package may mutate the official BOM ledger entry. This mirrors the etcd layout:
+          /globular/releases/active/official_bom       — GitHub release-index exact copy
+          /globular/releases/active/local_overrides/<pkg> — explicit local substitutions
+          /globular/releases/active/effective_bom       — computed, not upstream truth
+      protects:
+        state:
+            - /globular/releases/active/official_bom
+            - /globular/releases/active/local_overrides/{name}
+        files:
+            - golang/repository/repository_server/artifact_handlers.go
+            - golang/repository/repository_server/local_publish_guard.go
+        symbols:
+            - appendToLedger
+            - readLedger
+      enforcement: |
+        appendToLedger uses separate ledger keys per publisher. A local@<id> publisher ledger
+        write never touches the core@globular.io ledger. The official ledger LatestBuildID and
+        LatestVersion are immutable once written for a given version.
+      forbidden_fixes:
+        - update_official_bom_when_local_package_is_activated
+        - merge_local_override_into_official_bom_for_convenience
+        - compute_effective_bom_without_separating_official_and_local
+      required_tests:
+        - TestLocalPublish3_OfficialBOMUnaffectedByLocalPublish
+      related_failure_modes:
+        - package.bom_corruption_under_local_override
+
+    - id: package.promotion_must_use_official_release_pipeline
+      title: Promoting a local fix to official must go through the official build/release pipeline
+      severity: critical
+      status: active
+      summary: |
+        A local test build (publisher=local@<id>, version=1.2.43+local.ryzen.1) that has been
+        validated and is ready for production must NOT be promoted by renaming, relabeling, or
+        re-publishing with publisher=core@globular.io. Promotion must:
+          1. Clean checkout of the fix in the official source tree
+          2. Official build through the package tooling (pkggen.sh + globular pkg build)
+          3. New official version (e.g. 1.2.53)
+          4. New build_id assigned by the repository
+          5. New digest computed from the official build bytes
+          6. Published to the official repository
+          7. GitHub release asset uploaded
+          8. release-index.json updated and validated
+          9. Cluster upgraded from the official release-index
+        The local build may be used as evidence/reference, but the official artifact must be
+        built and pinned independently. The version immutability gate (appendToLedger) prevents
+        publishing a new build_id at an already-published (version, platform).
+      protects:
+        files:
+            - golang/repository/repository_server/artifact_handlers.go
+            - golang/globularcli/tools/pkggen/pkggen.sh
+        symbols:
+            - appendToLedger
+      enforcement: |
+        appendToLedger rejects any attempt to publish a new build_id at an existing
+        (version, platform) for a given publisher. Promotion must use a new version number.
+        The enforceOfficialNamespaceSeal gate catches same-version different-digest uploads.
+      forbidden_fixes:
+        - rename_local_artifact_to_official_without_rebuild
+        - override_appendToLedger_immutability_for_promotion
+        - skip_official_release_pipeline_to_speed_up_promotion
+      required_tests:
+        - TestLocalPublish5_PromotedVersionMustBeDistinct
+      related_failure_modes:
+        - package.promotion_bypasses_release_forge
+
+    - id: package.remote_local_artifact_must_not_override_stable
+      title: A local artifact imported from another cluster must not override this cluster's official desired state
+      severity: critical
+      status: active
+      summary: |
+        When importing or syncing packages from another cluster, a local/dev/hotfix artifact
+        (publisher=local@<other-cluster>, version with local suffix) must not silently override
+        this cluster's official desired state. Import rules:
+          - Official stable + matching digest → accept
+          - Official stable + different digest → reject/quarantine (seal violation)
+          - Local/dev/hotfix → import only with explicit trust policy or operator approval
+          - Local/dev/hotfix that would override official desired state → reject unless an
+            explicit override command (globular pkg override) has been run
+        This prevents Cluster B's local fix from contaminating Cluster A's official state
+        during cross-cluster replication or repository sync operations.
+      protects:
+        files:
+            - golang/repository/repository_server/local_publish_guard.go
+        symbols:
+            - enforceOfficialNamespaceSeal
+      enforcement: |
+        enforceOfficialNamespaceSeal() is the primary guard. If Cluster B sends
+        storage@1.2.43 with a different digest under core@globular.io + STABLE, the
+        seal rejects it. If it uses local@cluster-b + DEV + local version suffix, the
+        seal is a no-op (allowed for local lane), but desired state is not changed unless
+        an explicit override command is issued.
+      forbidden_fixes:
+        - auto_accept_cross_cluster_local_artifact_as_official
+        - trust_all_artifacts_from_known_cluster_without_digest_check
+        - ignore_publisher_field_during_cross_cluster_sync
+      required_tests:
+        - TestLocalPublish6_CrossClusterLocalCannotOverrideStable
+      related_failure_modes:
+        - package.identity_fraud_silent_override

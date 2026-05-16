@@ -1,0 +1,19 @@
+[Unit]
+Description=Globular Awareness Live Mirror Refresh
+Documentation=https://globular.io/docs/awareness/live_overlay
+After=network.target
+ConditionPathExists=/usr/local/bin/globular
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/globular awareness live-snapshot --db /var/lib/globular/awareness/graph.db
+# Redirect stdout to /dev/null — JSON output is for interactive use only.
+# Warnings still go to stderr and are captured by journald.
+StandardOutput=/dev/null
+StandardError=journal
+
+# Run as root so collectors can read /etc/systemd/system and /var/lib/globular.
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,387 @@
+fix_cases:
+  - id: config_seed_protection
+    title: Package reinstall must not overwrite live cluster config
+    status: DONE
+    pattern: "package reinstall overwrite"
+    category: config_ownership
+    target_invariants:
+      - install.result.atomic_commit
+    fixed_files:
+      - generated/specs/mcp_service.yaml
+    remaining_files:
+      - golang/fix/guardrails.md  # 1B audit not done
+    required_tests:
+      - TestSeedConfigsHaveSkipIfExists
+    dod: All cluster-owned config files use skip_if_exists or contract-rendered protection.
+    notes: "1A complete 2026-05-03; 1B (full ownership audit) is FUTURE"
+
+  - id: join_script_safety
+    title: Day-1 join script must be safe, deterministic, non-destructive
+    status: WIP
+    pattern: "join script"
+    category: join_safety
+    target_invariants:
+      - convergence.no_infinite_retry
+    fixed_files:
+      - Globular/internal/gateway/handlers/cluster/join_script.go
+    required_tests:
+      - TestJoinScript_BashNSyntaxCheck
+      - TestJoinScript_EtcdYamlExistingClusterState
+      - TestJoinScript_GhostMemberRemovalBeforeMemberAdd
+    dod: Generated join script passes bash -n, shellcheck, and 20 behavioral tests.
+    notes: "COMPLETE 2026-05-03"
+
+  - id: infra_drift_detection
+    title: Service-like infrastructure drift must be detected and not hidden
+    status: WIP
+    pattern: "infrastructure drift"
+    category: infra_drift
+    target_invariants:
+      - runtime.installed_state_not_liveness
+    fixed_files:
+      - golang/cluster_doctor/cluster_doctor_server/doctor.go
+    required_tests:
+      - TestInfraDriftBatchCoverage
+    dod: All 15 infra components covered by drift detection batch test.
+    notes: "COMPLETE 2026-05-03; 15 components"
+
+  - id: desired_hash_consistency
+    title: Infrastructure desired hash must use canonical computation everywhere
+    status: DONE
+    pattern: "desired hash"
+    category: convergence
+    target_invariants:
+      - infra.desired_hash_consistency
+      - convergence.no_infinite_retry
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/infrastructure_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/infrastructure_reconciler_test.go
+      - golang/workflow/workflow_server/infra_release_handler.go
+      - golang/workflow/workflow_server/infra_release_handler_test.go
+      - golang/node_agent/node_agent_server/installed_services.go
+      - golang/node_agent/node_agent_server/grpc_workflow.go
+    required_tests:
+      - TestInfraDesiredHashConsistency
+      - TestLookupServiceReleaseBuildIDUsesDesiredHash
+      - TestDriftWorkflowUsesDesiredHash
+    dod: All infrastructure convergence paths use ComputeInfrastructureDesiredHash, not ResolvedArtifactDigest.
+    notes: "DONE 2026-05-07. infrastructure_reconciler.go: infraReleaseBuildID/infraHashConverged/mustNotUseResolvedArtifactDigest pure helpers. infra_release_handler.go: infraDesiredHashValid/infraWorkflowInputsValid. installed_services.go: StampInfraConvergenceHash stamps convergence hash after INFRASTRUCTURE install. grpc_workflow.go: calls StampInfraConvergenceHash on INFRASTRUCTURE install success. Breaks the Envoy restart storm loop."
+
+  - id: scylla_critical_keyspace_rf_policy
+    title: Critical Scylla keyspace replication factor must match policy
+    status: WIP
+    pattern: "scylla keyspace RF below policy"
+    category: database_resilience
+    target_invariants:
+      - scylla.critical_keyspace_replication_policy
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/scylla_schema_guard.go
+      - golang/cluster_doctor/cluster_doctor_server/rules/scylla_health.go
+    required_tests:
+      - TestRFPolicyEnforcedOn5NodeCluster
+      - TestRFPolicyAllowsRF1OnSingleNode
+      - TestRFAlterFailurePublishesDegradedStatus
+    dod: Any critical keyspace below policy is detected, surfaced, and remediable without silent acceptance.
+    notes: "DONE 2026-05-04. Residual: expand catalog coverage as new keyspaces added."
+
+  - id: bootstrap_state_promotion
+    title: Bootstrap desired state must require explicit promotion
+    status: DONE
+    pattern: "bootstrap state authoritative"
+    category: desired_state
+    target_invariants:
+      - desired.bootstrap_state_requires_promotion
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/desired_state_publisher.go
+      - golang/cluster_controller/cluster_controller_server/promotion_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/reconcile_nodes.go
+    remaining_files: []
+    required_tests:
+      - TestBootstrapRecordIgnoredAsFinalByConsumers
+      - TestFirstBootClaimsConvergenceOnlyAfterPromotion
+    dod: Bootstrap defaults cannot accidentally become permanent cluster intent.
+    notes: "DONE 2026-05-07. stampBootstrapLabels applied at both materializeMissingInfraDesired call sites; bootstrapConvergenceAllowed gate; promotion reconciler promotes on Phase==AVAILABLE."
+
+  - id: absence_as_destructive_intent
+    title: Missing control-plane key must not stop or delete runtime
+    status: WIP
+    pattern: "missing key stopped service"
+    category: safety
+    target_invariants:
+      - critical_state.absence_is_not_destructive_intent
+    fixed_files:
+      - golang/node_agent/node_agent_server/ingress_consumer.go
+    remaining_files:
+      - golang/node_agent/node_agent_server/objectstore_consumer.go
+      - golang/node_agent/node_agent_server/envoy_consumer.go
+      - golang/node_agent/node_agent_server/dns_consumer.go
+    required_tests:
+      - TestMissingKeyDoesNotStopRuntime
+      - TestDeleteKeyWhileRunningKeepsRuntimeActive
+    dod: No critical runtime shuts down solely because a key is absent.
+    notes: "DONE for ingress 2026-05-04. Objectstore/envoy/dns rollout is FUTURE."
+
+  - id: lkg_expansion
+    title: Last-known-good state must cover all critical consumers
+    status: DONE
+    pattern: "last known good"
+    category: resilience
+    target_invariants:
+      - runtime.last_known_good_required_for_critical_consumers
+    fixed_files:
+      - golang/globular_service/lkg/lkg.go
+      - golang/node_agent/node_agent_server/ingress_reconcile.go
+      - golang/node_agent/node_agent_server/dns_sync.go
+      - golang/node_agent/node_agent_server/minio_contract_reconcile.go
+      - golang/node_agent/node_agent_server/xds_config_reconcile.go
+    required_tests:
+      - TestCorruptLKGRejectedPriorStateRetained
+      - TestAtomicLKGWriteSurvivesRestart
+      - TestEtcdOutageServesFromLKG
+    dod: LKG is durable, validated, and reusable across all critical consumers.
+    notes: "DONE 2026-05-07. All four critical consumers now have LKG. DNS was already done in dns_sync.go (loadDNSInitConfigWithLKGPath); objectstore already done in minio_contract_reconcile.go; ingress done in ingress_reconcile.go. The remaining_files in the original entry named files that do not exist — the consumers were wired into existing files. Envoy/xDS: new xds_config_reconcile.go implements file-first LKG guard for /var/lib/globular/xds/config.json (same pattern as dns_sync.go). All three required tests pass."
+
+  - id: critical_state_registry_ownership
+    title: Every critical key must have a registered owner and policy
+    status: DONE
+    pattern: "critical key registry"
+    category: governance
+    target_invariants:
+      - critical_state.registry_ownership_required
+    fixed_files:
+      - golang/config/critical_keys.go
+      - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+      - golang/cluster_doctor/cluster_doctor_server/collector/collector.go
+      - golang/cluster_doctor/cluster_doctor_server/collector/snapshot.go
+      - golang/cluster_doctor/cluster_doctor_server/rules/critical_key_registry.go
+    remaining_files: []
+    required_tests:
+      - TestRegistryKeyHasCompletePolicy
+      - TestUnknownWriterRejected
+      - TestDeleteCriticalKeyTriggerOwnerRestore
+    dod: Critical key governance is declarative and enforceable via doctor iteration.
+    notes: "DONE 2026-05-07. CriticalKeyPolicy struct + CriticalKeyPolicies table (8 entries covering all 5 keys + 3 prefixes) added to config package. OwnerForKey(), ValidateCriticalKeyOwner(), PolicyGapsForKeys() added. Collector populates CriticalKeyPolicyGaps statically (no etcd). Doctor criticalKeyOwnershipComplete invariant fires ERROR when any key in CriticalEtcdKeys/Prefixes lacks a policy entry — acts as CI regression guard. All 3 required tests pass. The controller's criticalStateRegistry in main package remains unchanged; the config package carries the subset accessible to doctor and other importers."
+
+  - id: intent_markers_tombstones
+    title: Critical key deletion requires audited intent marker
+    status: DONE
+    pattern: "delete without approval"
+    category: safety
+    target_invariants:
+      - critical_state.deletion_requires_audited_intent
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/ingress_spec_guard.go
+      - golang/cluster_controller/cluster_controller_server/delete_approval.go
+      - golang/cluster_controller/cluster_controller_server/objectstore_reconciler.go
+      - golang/cluster_controller/cluster_controller_server/pki_reconciler.go
+    remaining_files: []
+    required_tests:
+      - TestDeleteWithoutApprovalRestoresKey
+      - TestDeleteWithValidApprovalAccepted
+      - TestStaleApprovalGenerationRejected
+    dod: Key deletion is intentional, auditable, and reversible by default.
+    notes: "DONE 2026-05-07. Shared criticalKeyDeleteApproval struct + isValidDeleteApproval() + hasDeleteApprovalFromKVs() extracted to delete_approval.go (testable without etcd). objectstore_reconciler.go guards /globular/objectstore/config — restores from state via publishObjectStoreDesiredStateLocked() when key absent without valid tombstone at /globular/objectstore/delete_approval/. pki_reconciler.go guards /globular/pki/ca — restores via publishCAMetadataLocked() when absent without tombstone at /globular/pki/ca_delete_approval/. Both guards started from main.go alongside startIngressSpecGuard. Approval maxAge=24h; invalid actor/reason rejected. 3 required tests pass including boundary conditions."
+
+  - id: reconcile_lane_starvation
+    title: Reconcile lanes must not starve completion or critical publishers
+    status: WIP
+    pattern: "reconcile starvation"
+    category: convergence
+    target_invariants:
+      - reconcile.global_work_must_not_starve_completion
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/reconciler.go
+    required_tests:
+      - TestProjectionHangDoesNotBlockReleaseLane
+      - TestScyllaDegradedAllowsIngressRepublish
+      - TestTimeoutReleasesLaneLock
+    dod: Global starvation pattern is eliminated by architecture, not operator intervention.
+    notes: "DONE 2026-05-04. Lane isolation, timeout, metrics in place. New lanes must include timeout+status contract."
+
+  - id: bounded_critical_queries
+    title: All critical control-plane queries must have context deadline
+    status: DONE
+    pattern: "unbounded query"
+    category: resilience
+    target_invariants:
+      - critical_queries.must_be_bounded
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/reconciler.go
+      - golang/cluster_controller/cluster_controller_server/dns_reconciler.go
+    required_tests:
+      - TestQueryTimeoutMappedToDegradedCategory
+      - TestSlowBackendTriggersTimeoutAndLaneRecovery
+    dod: No critical reconcile path can hang indefinitely.
+    notes: "DONE 2026-05-07. withBounded() applied to 13 hot paths + DNS reconciler. fetchServiceInstances bounded via goroutine+select. Timeout errors map immediately to DEGRADED (not after 3 errors). Both required tests pass."
+
+  - id: derived_state_blocks_authority
+    title: Derived state failure must not block authority publication
+    status: WIP
+    pattern: "projection blocks authority"
+    category: convergence
+    target_invariants:
+      - derived_state.must_not_block_authority
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/reconciler.go
+    required_tests:
+      - TestProjectionScanHangAllowsIngressRepublish
+      - TestDerivedLaneErrorDoesNotFlipAuthorityToBlocked
+    dod: Authority lanes stay active under derived-state failures.
+    notes: "DONE 2026-05-04. Authority-first ordering enforced."
+
+  - id: recovery_without_dns
+    title: Recovery must work without DNS resolution
+    status: DONE
+    pattern: "DNS unavailable recovery"
+    category: resilience
+    target_invariants:
+      - recovery.must_not_depend_on_dns_only
+    fixed_files:
+      - golang/globularcli/resilience_cmds.go
+      - golang/config/cluster_dns.go
+    required_tests:
+      - TestIngressCLIWorksWithDNSDisabled
+      - TestControllerToNodeSkipsDNSOnLookupFailure
+    dod: DNS outage does not block recovery of ingress/objectstore/schema invariants.
+    notes: "DONE 2026-05-07. ClusterDialContext now falls back to /globular/cluster/dns/records (etcd hostname→IP map) when DNS UDP fails. Secondary fallback: Tier-0 host lists (GetMinioHosts/GetScyllaHosts/GetDNSHosts). Proven in Docker simulation: DNS stopped on all 3 nodes, etcd accessible, minio.globular.internal resolvable via records map. Both required tests pass."
+
+  - id: destructive_action_guards
+    title: Destructive actions require explicit validated guard
+    status: DONE
+    pattern: "ambiguous disable"
+    category: safety
+    target_invariants:
+      - destructive_actions.require_explicit_guard
+    fixed_files:
+      - golang/node_agent/node_agent_server/internal/ingress/spec.go
+      - golang/cluster_doctor/cluster_doctor_server/rules/destructive_action_audit.go
+    remaining_files: []
+    required_tests:
+      - TestMalformedDisableDoesNotStopRuntime
+      - TestExplicitValidDisableStopsRuntimeAndAuditable
+    dod: Destructive transitions are always explicit, validated, and attributable.
+    notes: "DONE 2026-05-07. IsExplicitDisable() guards node-agent keepalived action (spec.go). Doctor invariant ingressUnguardedDisableIntent fires CRITICAL from the desired spec itself — proactively, before any node processes it. Complements ingressAmbiguousDisableRejected (node status path). 4 tests pass: TestMalformedDisableDoesNotStopRuntime (4 sub-cases), TestExplicitValidDisableStopsRuntimeAndAuditable, TestActiveSpecProducesNoFinding, TestMissingSpecProducesNoFinding."
+
+  - id: topology_safety_drift_reconciler
+    title: Topology drift reconciler must respect safety contracts
+    status: DONE
+    pattern: "topology drift unsafe"
+    category: safety
+    target_invariants:
+      - topology.reconciler_must_respect_safety_contract
+    fixed_files:
+      - golang/cluster_controller/cluster_controller_server/repair_node_workflow.go
+      - golang/cluster_controller/cluster_controller_server/drift_action_planner.go
+      - golang/cluster_controller/cluster_controller_server/reconciler.go
+      - golang/cluster_controller/cluster_controller_server/drift_action_planner_test.go
+    required_tests:
+      - TestStaleMajorityTopologyRejectedWhileSafeActionsRun
+      - TestPerActionSafetyGateDeterministic
+    dod: Drift reconciler becomes safety-aware, not purely convergent.
+    notes: "DONE 2026-05-07. drift_action_planner.go adds classifyDriftAction/driftActionSafe. reconcileOnce uses per-action gate — SERVICE/COMMAND continue when topology is degraded; INFRASTRUCTURE blocked when violations present. Both required tests pass."
+
+  - id: drift_severity_escalation
+    title: Service drift must age and escalate severity
+    status: DONE
+    pattern: "drift warning forever"
+    category: observability
+    target_invariants:
+      - services.drift_must_age_and_escalate
+    fixed_files:
+      - golang/cluster_doctor/cluster_doctor_server/collector/collector.go
+      - golang/cluster_doctor/cluster_doctor_server/rules/cluster_services_drift.go
+    required_tests:
+      - TestClusterServicesDrift_UnknownAge_IsWarn
+      - TestClusterServicesDrift_ShortAge_IsWarn
+      - TestClusterServicesDrift_LongAge_IsError
+    dod: Drift severity reflects urgency. Stale drift becomes blocking, not background noise.
+    notes: "DONE 2026-05-04. NodeDriftAge in Snapshot, driftSince in Collector. 4 tests pass."
+
+  - id: pki_ca_registry
+    title: PKI CA metadata must be in critical state registry
+    status: WIP
+    pattern: "pki CA not published"
+    category: governance
+    target_invariants:
+      - pki.ca_metadata_must_be_published
+    fixed_files:
+      - golang/config/critical_keys.go
+      - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+    required_tests:
+      - TestPKICANotPublishedFiresWhenCAMetadataNilAndNodesExist
+      - TestPKICANotPublishedClearsWhenCAPresent
+      - TestPKIRegistryEntryComplete
+    dod: PKI CA metadata governed by same critical-state registry as all other Class A keys.
+    notes: "DONE 2026-05-04. /globular/pki/ca in CriticalEtcdKeys and registry. 6 pki_health tests."
+
+  - id: runtime_proof_package_kind
+    title: Doctor runtime proof must use catalog-driven package kind
+    status: DONE
+    pattern: "command package missing systemd unit"
+    category: observability
+    target_invariants:
+      - runtime.installed_state_must_match_package_kind
+    fixed_files:
+      - golang/cluster_doctor/cluster_doctor_server/rules/installed_state_runtime_mismatch.go
+      - golang/cluster_doctor/cluster_doctor_server/rules/installed_state_runtime_mismatch_test.go
+    remaining_files:
+      - golang/cluster_doctor/cluster_doctor_server/rules/installed_state_runtime_mismatch.go
+    required_tests:
+      - TestInstalledStateRuntimeMismatch_CommandPackage_NoFinding
+      - TestInstalledStateRuntimeMismatch_DaemonMissingUnit_FindingFired
+      - TestInstalledStateRuntimeMismatch_DaemonActiveUnit_NoFinding
+    dod: Doctor only flags missing systemd units for packages expected to run as daemons.
+    notes: "DONE 2026-05-04. 9 unit tests. Hardcoded commandPackage() list validated; catalog-driven is tech debt."
+
+  - id: objectstore_critical_registry
+    title: Objectstore desired state must be in critical state registry
+    status: WIP
+    pattern: "objectstore no desired state"
+    category: governance
+    target_invariants:
+      - objectstore.desired_state_must_be_registry_governed
+    fixed_files:
+      - golang/config/critical_keys.go
+      - golang/cluster_controller/cluster_controller_server/critical_state_registry.go
+    required_tests:
+      - TestObjectstoreNoDesiredStateFiresWhenNilAndStorageNodes
+      - TestObjectstoreNoDesiredStateDoesNotFireWithNoStorageNodes
+      - TestObjectstoreRegistryEntryComplete
+    dod: Objectstore topology governed by same critical-state registry as all other Class A keys.
+    notes: "DONE 2026-05-04. /globular/objectstore/config in CriticalEtcdKeys and registry."
+
+  - id: graph_integrity_trust_management
+    title: Graph integrity and trust management for awareness knowledge graph
+    status: DONE
+    pattern: "graph integrity trust decay stale"
+    category: awareness_meta
+    target_invariants:
+      - awareness.graph_stays_honest
+    fixed_files:
+      - golang/awareness/integrity/check.go
+      - golang/awareness/integrity/shapes.go
+      - golang/awareness/integrity/contradictions.go
+      - golang/awareness/integrity/testref.go
+      - golang/awareness/integrity/trust.go
+      - golang/awareness/integrity/impact_path.go
+      - golang/awareness/mcp/integrity_tool.go
+      - golang/awareness/cmd/awareness-ci-check/main.go
+      - golang/awareness/graph/db.go
+      - golang/awareness/graph/edges.go
+    required_tests:
+      - TestGraphIntegrity_DoneFixCaseMissingTestFails
+      - TestGraphIntegrity_RequiredTestNoPathWarns
+      - TestGraphIntegrity_FailureModeMissingForbiddenFixFails
+      - TestGraphIntegrity_ForbiddenFixMissingSafeAlternativeFails
+      - TestGraphIntegrity_CausalRuleContradictsForbiddenFixFails
+      - TestGraphIntegrity_EtcdDisarmBeforeCompactDetected
+      - TestGraphIntegrity_CorrectEtcdOrderNotFlagged
+      - TestGraphIntegrity_PromotedProposalNotIndexedWarnsOrFails
+      - TestImpactPath_ChangedFileToInvariantToTests
+      - TestImpactPath_LabelsInferredEdgesLowConfidence
+    dod: |
+      awareness.graph_integrity_check tool exists. DONE fix cases with missing tests fail.
+      Causal rule/forbidden fix contradictions are detected. Test reference integrity is reported.
+      Edge provenance model added. Trust levels visible. Impact path traversal works.
+      CI can run graph integrity in strict mode. Tests pass. Docs added.
+    notes: "DONE Phase 11. Graph integrity layer added without rewriting the graph system."

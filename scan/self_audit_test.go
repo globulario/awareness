@@ -140,9 +140,9 @@ func awarenessDocsDir(t *testing.T) string {
 	if !ok {
 		t.Fatal("cannot resolve test file path")
 	}
-	// scan/self_audit_test.go is at golang/awareness/scan/; docs are at
-	// repo_root/docs/awareness/.
-	docs, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "docs", "awareness"))
+	// scan/self_audit_test.go is at awareness/scan/; docs are at
+	// awareness/docs/awareness/ (one level up from scan/).
+	docs, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "docs", "awareness"))
 	if err != nil {
 		t.Fatal(err)
 	}

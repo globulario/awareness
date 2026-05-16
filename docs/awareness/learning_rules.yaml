@@ -1,0 +1,30 @@
+rules:
+  - id: learning.must_be_reviewable
+    summary: >
+      AI-generated awareness must be written as proposal YAML in docs/awareness/proposals/,
+      not directly promoted to approved awareness files. Every proposal must be validated
+      and approved before it becomes architecture law.
+
+  - id: learning.no_silent_invariant_creation
+    summary: >
+      New critical invariants require explicit human approval before becoming active.
+      AI may propose invariants, but the promotion step is always gated by a validated
+      proposal and a deliberate operator action.
+
+  - id: learning.no_weakening_existing_laws
+    summary: >
+      AI proposals must not delete or weaken existing critical invariants.
+      A proposal that lowers severity, removes forbidden fixes, or removes required
+      tests from an existing critical invariant is automatically rejected by the validator.
+
+  - id: learning.failure_modes_need_evidence
+    summary: >
+      Failure modes proposed from an incident must reference the source incident,
+      include at least one symptom, a root cause, and an architecture fix.
+      Failure modes without evidence links are rejected during validation.
+
+  - id: learning.required_tests_for_critical_invariant
+    summary: >
+      Critical invariants must include at least one required test or an explicit
+      TODO test entry documenting what test must be written. Invariants without
+      tests are rejected during validation.

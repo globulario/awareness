@@ -1,0 +1,36 @@
+proposal:
+    id: learned-fix-20260507T201638Z
+    source_incident: ""
+    status: REJECTED
+    rejected_reason: "duplicate of proposal.inc_2026_0002 — same root cause (MCP sd_notify missing READY=1), inferior schema (missing source_incident and related_services), single required test vs three"
+    created_at: "2026-05-07T20:16:38Z"
+failure_modes:
+    - id: failure_mode.mcp_server_accumulates_orphaned_processe
+      title: mcp_server accumulates orphaned processes (PPid=1) that hold port 10260, causing...
+      severity: medium
+      symptoms:
+        - mcp_server accumulates orphaned processes (PPid=1) that hold port 10260, causing WaitActive to time out and installed state to never be updated in etcd
+      root_cause: mcp_server declared Type=notify in its systemd unit but never called sd_notify(READY=1) after binding the HTTP listener, so systemd killed and restarted it endlessly
+      architecture_fix: Added sdNotifyReady(ctx) in serveHTTP() immediately after net.Listen succeeds. Sends READY=1 to systemd via NOTIFY_SOCKET, then WATCHDOG=1 every 30s
+      required_tests:
+        - TestMCPSdNotifySentAfterBind
+invariants:
+    - id: invariant.mcp_server_declared_type_notify_in_its_s
+      title: 'Invariant from fix: mcp_server declared Type=notify in its systemd unit but neve...'
+      severity: medium
+      summary: 'mcp_server declared Type=notify in its systemd unit but never called sd_notify(READY=1) after binding the HTTP listener, so systemd killed and restarted it endlessly — fix: Added sdNotifyReady(ctx) in serveHTTP() immediately after net.Listen succeeds. Sends READY=1 to systemd via NOTIFY_SOCKET, then WATCHDOG=1 every 30s'
+      required_tests:
+        - TestMCPSdNotifySentAfterBind
+forbidden_fixes:
+    - id: forbidden_fix.adding_execstartpre_pkill_as_the_only_fi
+      title: Adding ExecStartPre pkill as the only fix — this treats the symptom (orphans) ...
+      summary: 'Tempting but incorrect fix: Adding ExecStartPre pkill as the only fix — this treats the symptom (orphans) not the cause (missing sd_notify). Root cause was: mcp_server declared Type=notify in its systemd unit but never called sd_notify(READY=1) after binding the HTTP listener, so systemd killed and restarted it endlessly'
+evidence:
+    source_incident: ""
+    symptoms:
+        - mcp_server accumulates orphaned processes (PPid=1) that hold port 10260, causing WaitActive to time out and installed state to never be updated in etcd
+    state_deltas:
+        - 'verification: Service reached active (running) state immediately after deploy; node-agent WaitActive succeeded; etcd installed state updated to new version'
+    manual_repairs:
+        - Added sdNotifyReady(ctx) in serveHTTP() immediately after net.Listen succeeds. Sends READY=1 to systemd via NOTIFY_SOCKET, then WATCHDOG=1 every 30s
+learn_source: learn_from_fix

@@ -1,0 +1,87 @@
+invariants:
+  - id: convergence.no_infinite_retry
+    title: No infinite deterministic retry
+    severity: critical
+    status: active
+    summary: >
+      Reconciliation must classify failures as transient, deterministic,
+      blocked, or pending-sync. Deterministic failures must not retry forever.
+      They must become BLOCKED until input changes.
+    protects:
+      symbols:
+        - reconcileService
+        - classifyFailure
+        - applyDesiredState
+    forbidden_fixes:
+      - blind_reconcile_retry
+      - treating_all_failures_as_transient
+      - clearing_action_without_durable_result
+      - marking_available_from_local_success_only
+    required_tests:
+      - TestDeterministicFailureDoesNotRetryForever
+      - TestPendingSyncRecovery
+      - TestLeaderFailoverDuringResultCommit
+    implemented_by:
+      - file: golang/cluster_controller/cluster_controller_server/reconciler.go
+        trust: declared
+      - file: golang/node_agent/node_agent_server/grpc_workflow.go
+        trust: declared
+    related_failure_modes:
+      - install.result.partial_commit
+      - deterministic.install.failure.retry_loop
+
+  - id: repository.metadata_first
+    title: Repository metadata authority must not depend on blob backend
+    severity: high
+    status: active
+    summary: >
+      Repository ledger and metadata authority must not fully depend on
+      blob backend (MinIO) availability. Metadata queries (list, resolve,
+      get manifest) must be served from ScyllaDB even when MinIO is degraded.
+      Only blob download requires MinIO to be available.
+    protects:
+      state:
+        - /globular/resources/ServiceRelease/{name}
+      symbols:
+        - ListArtifacts
+        - GetArtifactVersions
+        - resolveLatestBuildNumber
+    forbidden_fixes:
+      - gate_metadata_reads_on_minio_health
+      - store_artifact_index_only_in_minio
+    required_tests:
+      - TestListArtifactsWhenMinIODown
+      - TestMetadataReadsDegradedMode
+    implemented_by:
+      - file: golang/repository/repository_server/artifact_handlers.go
+        trust: declared
+    related_failure_modes:
+      - repository.minio.recovery_cycle
+
+  - id: workflow.backend_health_gate
+    title: Workflow dispatch must gate on backend health
+    severity: critical
+    status: active
+    summary: >
+      Workflow dispatch must stop or degrade safely when Scylla or backend
+      health is broken. Dispatching workflows when the persistence layer is
+      down creates orphaned workflow records and leaves actions uncommitted.
+    protects:
+      symbols:
+        - dispatchWorkflow
+        - startWorkflowStep
+      systemd_units:
+        - globular-workflow.service
+    forbidden_fixes:
+      - dispatch_workflow_when_scylla_down
+      - ignore_backend_health_on_dispatch
+    required_tests:
+      - TestWorkflowDispatchRefusedWhenScyllaDown
+      - TestWorkflowBackendHealthGate
+    implemented_by:
+      - file: golang/cluster_controller/cluster_controller_server/recovery_rpc.go
+        trust: declared
+      - file: golang/workflow/workflow_server/server.go
+        trust: declared
+    related_failure_modes:
+      - workflow.backend_unavailable

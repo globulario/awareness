@@ -1,0 +1,12 @@
+allowlist:
+  # The AST scanner's own source code references loopback strings as part of
+  # detection logic (isLoopback helper) and knowledge ID strings that happen to
+  # contain the substring "localhost" (e.g. "hard_rule.no_localhost"). These are
+  # not configuration addresses — they are the detection patterns themselves.
+  - path_pattern: "ast_scanner.go"
+    pattern_id: "loopback_string_literal"
+    reason: >
+      ast_scanner.go contains the isLoopback() detection function which necessarily
+      references "127.0.0.1" and "localhost" as detection substrings, and embeds
+      knowledge IDs like "hard_rule.no_localhost" as Go string literals. These are
+      detector code, not configuration addresses.

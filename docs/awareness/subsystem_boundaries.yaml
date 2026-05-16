@@ -1,0 +1,111 @@
+subsystem_boundaries:
+  - subsystem: objectstore
+    owns:
+      - MinIO topology contract
+      - objectstore quorum classification rules
+      - /globular/objectstore/config
+    does_not_own:
+      - node inventory truth (owned by node-agent collector)
+      - package installation truth (owned by node-agent)
+      - systemd unit state (owned by node-agent runtime layer)
+    authoritative_sources:
+      desired_state: etcd /globular/objectstore/config
+      installed_state: node-agent installed package state
+      runtime_state: MinIO health endpoint + node-agent service state
+      inventory_state: NodeRecord inventory snapshot (point-in-time, uncertain if missing)
+    dangerous_confusions:
+      - inventory absence is not runtime down
+      - desired pool membership is not installed pool membership
+      - runtime health is not package availability
+    related_invariants:
+      - objectstore.topology_contract
+    last_verified: 2026-05-14
+    stale_after_days: 180
+
+  - subsystem: controller
+    owns:
+      - desired state for all services
+      - cluster-wide convergence decisions
+      - workflow dispatch authority
+    does_not_own:
+      - installed state (owned by node-agent)
+      - runtime health (owned by node-agent + systemd)
+      - package storage (owned by repository/MinIO)
+    authoritative_sources:
+      desired_state: etcd /globular/resources/DesiredService/
+      installed_state: etcd /globular/nodes/{node_id}/packages/ (written by node-agent)
+      runtime_state: node heartbeat + gRPC health checks
+    dangerous_confusions:
+      - controller must not write installed state
+      - controller must not use runtime health as desired state authority
+      - leader lease expiry does not mean desired state should be deleted
+    related_invariants:
+      - infra.heartbeat_not_desired_authority
+      - desired.build_id_immutable
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - subsystem: node_agent
+    owns:
+      - package installation execution
+      - installed state reporting (Layer 3)
+      - runtime health observation (Layer 4)
+      - process lifecycle (systemd start/stop/restart)
+    does_not_own:
+      - desired state (owned by controller)
+      - artifact storage (owned by repository/MinIO)
+      - cluster-wide decisions
+    authoritative_sources:
+      installed_state: local package registry + etcd write-back
+      runtime_state: systemd unit state + gRPC health
+    dangerous_confusions:
+      - node-agent must not write desired state
+      - node-agent install result must be committed to etcd before returning
+      - pkill must use -x not -f to avoid self-SIGKILL
+    related_invariants:
+      - infra.heartbeat_not_desired_authority
+      - runtime.installed_state_not_liveness
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - subsystem: repository
+    owns:
+      - artifact storage in MinIO
+      - artifact manifest (Scylla-backed index)
+      - artifact availability truth
+    does_not_own:
+      - desired version (owned by controller)
+      - installed version (owned by node-agent)
+      - runtime state
+    authoritative_sources:
+      artifact_truth: Scylla manifests table + local POSIX CAS
+    dangerous_confusions:
+      - latest repository version is not the desired version
+      - MinIO is a cache for packages, not the source of truth for artifact identity
+      - Scylla is the index; local POSIX CAS is the installable truth
+    related_invariants:
+      - desired.build_id_immutable
+      - repository.metadata_first
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - subsystem: awareness
+    owns:
+      - architectural knowledge (invariants, failure modes, forbidden fixes)
+      - preflight analysis and context
+      - graph-based impact analysis
+    does_not_own:
+      - live cluster state (owned by etcd + runtime collectors)
+      - convergence decisions (owned by controller)
+      - package state (owned by repository/node-agent)
+    authoritative_sources:
+      compiled_context: awareness graph (YAML → SQLite, stale possible)
+      live_context: etcd + node-agent + runtime collector snapshot
+    dangerous_confusions:
+      - awareness graph output is compiled context, not live cluster state
+      - NO_MATCH in graph does not mean the action is safe
+      - preflight output requires live snapshot for runtime confidence
+    related_invariants:
+      - awareness.graph_edges_need_provenance
+    last_verified: 2026-04-15
+    stale_after_days: 180

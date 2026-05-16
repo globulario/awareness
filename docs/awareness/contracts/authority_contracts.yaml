@@ -1,0 +1,183 @@
+# authority_contracts.yaml
+# Contracts for data authority — who owns what truth, and what drift means.
+# "bundle = map" — this file encodes the relationships, not the live values.
+
+version: "1"
+schema: "globular.awareness.authority_contracts/v1"
+
+contracts:
+
+  - id: contract.release_index.authority
+    domain: release_index
+    kind: authority
+    summary: >
+      The release-index is the release spine. It pins platform version, build_id,
+      service packages, infra packages, the awareness bundle, and checksums.
+      Divergence from the release-index must be classified precisely.
+    authority_for:
+      - platform.version
+      - platform.build_id
+      - service_packages
+      - infra_packages
+      - awareness_bundle.version
+      - awareness_bundle.build_id
+      - binary_checksums
+    compared_with:
+      - installed-state
+      - runtime binary checksums
+      - MCP loaded awareness bundle
+    required_invariant: >
+      release_index.version == binary.version == awareness_bundle.version
+      release_index.build_id == awareness_bundle.build_id
+    classifications:
+      missing: RELEASE_INDEX_MISSING
+      stale: RELEASE_INDEX_STALE
+      authority_lost: RELEASE_INDEX_AUTHORITY_LOST
+      build_id_mismatch: PACKAGE_BUILD_MISMATCH
+      bundle_missing: AWARENESS_BUNDLE_MISSING
+      bundle_mismatch: AWARENESS_BUNDLE_MISMATCH
+      checksum_mismatch: BINARY_CHECKSUM_MISMATCH
+    gate_failure_blocks:
+      - AWARENESS_READY
+      - DAY1_COMPLETE
+
+  - id: contract.etcd.key_authority
+    domain: etcd
+    kind: authority
+    summary: >
+      Etcd is cluster authority for desired state and topology.
+      Awareness must know which keys carry which meaning.
+      Empty etcd does not automatically mean the local runtime is invalid.
+    key_contracts:
+      - key: /globular/resources/InfrastructureRelease/*
+        represents: desired infra release
+      - key: /globular/resources/ServiceRelease/*
+        represents: desired service release
+      - key: /globular/nodes/*
+        represents: node membership and readiness
+      - key: /globular/objectstore/config
+        represents: objectstore topology authority
+      - key: /globular/awareness/runtime/{node-id}/*
+        represents: runtime evidence and readiness facts (TTL-based)
+    classifications:
+      unreachable: ETCD_UNREACHABLE
+      authority_empty: ETCD_AUTHORITY_EMPTY
+      authority_partial: ETCD_AUTHORITY_PARTIAL
+      desired_state_missing: DESIRED_STATE_MISSING
+      divergence: DESIRED_INSTALLED_DIVERGENCE
+      runtime_divergence: DESIRED_INSTALLED_RUNTIME_DIVERGENCE
+      topology_missing: TOPOLOGY_CONTRACT_MISSING
+      membership_contradiction: NODE_MEMBERSHIP_CONTRADICTION
+      authority_lost_runtime_survived: AUTHORITY_LOST_WITH_LOCAL_RUNTIME_SURVIVED
+    special_rule: >
+      If local installed-state and systemd evidence exist while etcd desired-state is missing,
+      classify as AUTHORITY_LOST_WITH_LOCAL_RUNTIME_SURVIVED.
+      Do not reinstall blindly — preserve evidence and propose recovery.
+
+  - id: contract.local_config.authority
+    domain: local_config
+    kind: authority
+    summary: >
+      Local config is evidence, not final authority.
+      Config files may drift from release-index, etcd desired state, rendered service config,
+      installed-state, and runtime state. Drift must be classified precisely.
+    compared_with:
+      - release-index
+      - etcd desired state
+      - rendered unit/config files
+      - runtime service state
+    classifications:
+      missing: LOCAL_CONFIG_MISSING
+      stale: LOCAL_CONFIG_STALE
+      drift: LOCAL_CONFIG_DRIFT
+      conflicts_etcd: LOCAL_CONFIG_CONFLICTS_WITH_ETCD
+      conflicts_release_index: LOCAL_CONFIG_CONFLICTS_WITH_RELEASE_INDEX
+      valid_but_runtime_failed: LOCAL_CONFIG_VALID_BUT_RUNTIME_FAILED
+      authority_drift: AUTHORITY_DRIFT
+    example: >
+      scylla.yaml seed list from local config != etcd topology seed list
+      → SCYLLA_CONFIG_AUTHORITY_DRIFT (not generic SERVICE_FAILED)
+
+  - id: contract.pki.identity
+    domain: pki
+    kind: identity
+    summary: >
+      A node can be reachable but not trusted.
+      PKI is part of Day-1 readiness — missing certificates block MCP trust, gRPC auth,
+      and service mesh participation.
+    files:
+      ca_cert: /var/lib/globular/pki/ca.crt
+      node_cert: /var/lib/globular/pki/issued/services/service.crt
+      node_key: /var/lib/globular/pki/issued/services/service.key
+    used_by:
+      - MCP HTTPS
+      - gRPC mTLS
+      - service mesh (Envoy sidecar)
+      - node-agent/controller auth
+    runtime_checks:
+      - CA bundle exists
+      - node certificate exists
+      - private key exists
+      - certificate is not expired
+      - SAN matches node DNS/IP
+      - certificate chains to expected cluster CA
+    classifications:
+      missing: PKI_MISSING
+      expired: PKI_EXPIRED
+      san_mismatch: PKI_SAN_MISMATCH
+      cluster_trust_mismatch: PKI_CLUSTER_TRUST_MISMATCH
+      mcp_untrusted: MCP_REACHABLE_BUT_UNTRUSTED
+      grpc_untrusted: GRPC_REACHABLE_BUT_UNTRUSTED
+      ca_drift: CERTIFICATE_AUTHORITY_DRIFT
+    day1_rule: >
+      If MCP is reachable over HTTPS but certificate validation fails, classify as
+      MCP_REACHABLE_BUT_UNTRUSTED. Do not treat this as normal MCP readiness.
+
+  - id: contract.installed_state.cross_check
+    domain: installed_state
+    kind: authority
+    summary: >
+      Installed-state must never be trusted alone.
+      It must be cross-checked against release-index, etcd desired state,
+      systemd unit presence, binary existence, and runtime health.
+    cross_check_against:
+      - release-index version/build_id
+      - etcd desired state
+      - systemd unit active
+      - binary file present
+      - runtime health check
+    classifications:
+      missing: INSTALLED_STATE_MISSING
+      stale: INSTALLED_STATE_STALE
+      build_mismatch: INSTALLED_STATE_BUILD_MISMATCH
+      present_runtime_dead: INSTALLED_STATE_PRESENT_RUNTIME_DEAD
+      present_unit_missing: INSTALLED_STATE_PRESENT_UNIT_MISSING
+      present_binary_missing: INSTALLED_STATE_PRESENT_BINARY_MISSING
+
+  - id: contract.systemd.runtime_proof
+    domain: systemd
+    kind: runtime_proof
+    summary: >
+      Systemd is runtime proof, not authority.
+      "systemd active" is not enough — runtime readiness must include health and
+      dependency checks. A service can be active with a broken port or failed healthcheck.
+    proof_chain:
+      - unit exists
+      - unit active
+      - ExecStart binary exists
+      - environment file exists
+      - expected port listening
+      - health endpoint responds
+    classifications:
+      unit_missing: UNIT_MISSING
+      rendering_drift: UNIT_RENDERING_DRIFT
+      start_limit_hit: UNIT_START_LIMIT_HIT
+      working_dir_missing: UNIT_WORKING_DIRECTORY_MISSING
+      env_file_missing: UNIT_ENV_FILE_MISSING
+      exec_missing: UNIT_EXEC_MISSING
+      active_port_closed: SERVICE_PROCESS_RUNNING_PORT_CLOSED
+      active_health_failed: SERVICE_ACTIVE_HEALTH_FAILED
+      health_mismatch: RUNTIME_HEALTH_MISMATCH
+    rule: >
+      Never classify a service as READY based only on systemd active.
+      Port listening + health endpoint response are required proof.

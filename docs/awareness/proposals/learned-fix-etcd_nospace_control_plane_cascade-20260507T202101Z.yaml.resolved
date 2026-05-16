@@ -1,0 +1,27 @@
+proposal:
+    id: learned-fix-etcd_nospace_control_plane_cascade-20260507T202101Z
+    source_incident: etcd-nospace-control-plane-cascade
+    status: REJECTED
+    rejected_reason: "fully covered by etcd.disarm_before_compact in forbidden_fixes.yaml and etcd.nospace_alarm architecture_fix step 5 in failure_modes.yaml; no unique content"
+    created_at: "2026-05-07T20:21:01Z"
+failure_modes:
+    - id: failure_mode.etcd_nospace_alarm_cleared_before_disk_p
+      title: etcd NOSPACE alarm cleared before disk pressure is resolved, causing immediate r...
+      severity: medium
+      symptoms:
+        - etcd NOSPACE alarm cleared before disk pressure is resolved, causing immediate re-alarm
+      root_cause: Operator runs 'etcdctl alarm disarm' without first compacting and defragmenting. The alarm re-fires immediately because the database is still beyond quota.
+      architecture_fix: 'Compact first: etcdctl compact <rev>; then defrag; then verify disk usage drops; then disarm alarm. Verify with etcdctl endpoint status before declaring resolved.'
+forbidden_fixes:
+    - id: forbidden_fix.run_etcdctl_alarm_disarm_as_the_first
+      title: run 'etcdctl alarm disarm' as the first step without compacting history or defra...
+      summary: 'Tempting but incorrect fix: run ''etcdctl alarm disarm'' as the first step without compacting history or defragmenting — alarm re-fires immediately and control-plane cascade resumes. Root cause was: Operator runs ''etcdctl alarm disarm'' without first compacting and defragmenting. The alarm re-fires immediately because the database is still beyond quota.'
+evidence:
+    source_incident: etcd-nospace-control-plane-cascade
+    symptoms:
+        - etcd NOSPACE alarm cleared before disk pressure is resolved, causing immediate re-alarm
+    state_deltas:
+        - 'verification: etcdctl alarm list returns empty and stays empty for 5 minutes after disarm'
+    manual_repairs:
+        - 'Compact first: etcdctl compact <rev>; then defrag; then verify disk usage drops; then disarm alarm. Verify with etcdctl endpoint status before declaring resolved.'
+learn_source: learn_from_fix

@@ -1,0 +1,85 @@
+decisions:
+  - id: decision.local_success_is_not_global_convergence
+    title: Local install success does not imply cluster convergence
+    status: accepted
+    date: 2026-04-01
+    because:
+      - node-agent reports installed state to etcd after each install
+      - controller reconciler reads installed state and computes convergence
+      - a node can succeed locally while other nodes are still converging
+      - install result must be committed to etcd for cluster-wide convergence
+    protects_invariants:
+      - infra.heartbeat_not_desired_authority
+      - desired.build_id_immutable
+    related_failure_modes:
+      - install.result.partial_commit
+      - deterministic.install.failure.retry_loop
+    forbidden_fixes:
+      - skip_etcd_commit_on_local_success
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: decision.desired_hash_is_convergence_identity
+    title: Desired hash is the identity token for convergence comparison
+    status: accepted
+    date: 2026-04-01
+    because:
+      - build_id (UUID) is the artifact identity
+      - desired hash is derived from the resolved desired state snapshot
+      - comparing desired hash to installed hash detects drift without re-resolving
+    protects_invariants:
+      - desired.build_id_immutable
+    related_failure_modes:
+      - minio.version_drift_auth_failure
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: decision.missing_state_is_not_delete_intent
+    title: Absence of a desired state key is not an instruction to stop or delete
+    status: accepted
+    date: 2026-04-01
+    because:
+      - etcd key eviction can occur due to lease expiry or network partition
+      - treating absence as "stop this service" causes cascading shutdowns
+      - the controller must distinguish explicit delete from missing key
+    protects_invariants:
+      - critical_state.absence_is_not_destructive_intent
+    related_failure_modes:
+      - critical_state.absent_key_interpreted_as_stop
+    forbidden_fixes:
+      - treat_missing_desired_state_as_stop_intent
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: decision.runtime_observation_is_not_desired_authority
+    title: Runtime health observation must not mutate desired state
+    status: accepted
+    date: 2026-04-01
+    because:
+      - heartbeat records installed/runtime state, not desired state
+      - desired state is owned by the controller, not the node agent
+      - mixing observation and authority causes convergence loops
+    protects_invariants:
+      - infra.heartbeat_not_desired_authority
+    related_failure_modes:
+      - node_agent.state_poisoning_from_stale_reconciler
+    forbidden_fixes:
+      - heartbeat_writes_desired_state
+    last_verified: 2026-04-15
+    stale_after_days: 365
+
+  - id: decision.awareness_graph_is_compiled_context_not_authority
+    title: Awareness graph is compiled context, not runtime authority
+    status: accepted
+    date: 2026-04-01
+    because:
+      - graph is built from YAML files at compile/build time
+      - graph can be stale if YAML files are edited without rebuild
+      - MCP tools must not treat graph output as real-time cluster state
+      - live cluster state comes from etcd, node-agent, and runtime collectors
+    protects_invariants:
+      - awareness.graph_edges_need_provenance
+    forbidden_fixes:
+      - treat_graph_output_as_live_cluster_state
+    last_verified: 2026-04-15
+    stale_after_days: 180

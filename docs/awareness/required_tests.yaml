@@ -1,0 +1,109 @@
+required_tests:
+  - id: test.desired_build_id_immutable_after_write
+    title: Desired build_id must not change after resolution
+    protects:
+      invariants:
+        - desired.build_id_immutable
+      failure_modes:
+        - minio.version_drift_auth_failure
+    required_for_changes:
+      paths:
+        - golang/cluster_controller/**
+        - golang/node_agent/**
+      task_terms:
+        - build_id
+        - desired state
+        - convergence
+        - version resolution
+    commands:
+      - go test ./golang/cluster_controller/... -run BuildID
+      - go test ./golang/node_agent/... -run DesiredState
+    evidence:
+      - desired build_id cannot be overwritten once set
+      - drift comparison uses build_id not version string
+
+  - id: test.heartbeat_does_not_write_desired_state
+    title: Heartbeat must only write observed/installed state, never desired state
+    protects:
+      invariants:
+        - infra.heartbeat_not_desired_authority
+      failure_modes:
+        - node_agent.state_poisoning_from_stale_reconciler
+    required_for_changes:
+      paths:
+        - golang/node_agent/**
+      task_terms:
+        - heartbeat
+        - installed state
+        - observed state
+        - node agent
+    commands:
+      - go test ./golang/node_agent/... -run Heartbeat
+    evidence:
+      - heartbeat writes only to installed/runtime keys
+      - no writes to /globular/resources/DesiredService/ from node agent
+
+  - id: test.absent_key_does_not_stop_service
+    title: Missing desired state key must not trigger service stop
+    protects:
+      invariants:
+        - critical_state.absence_is_not_destructive_intent
+      failure_modes:
+        - critical_state.absent_key_interpreted_as_stop
+    required_for_changes:
+      paths:
+        - golang/cluster_controller/**
+        - golang/node_agent/**
+      task_terms:
+        - key not found
+        - desired state
+        - stop service
+        - delete
+    commands:
+      - go test ./golang/cluster_controller/... -run AbsentKey
+      - go test ./golang/node_agent/... -run MissingKey
+    evidence:
+      - service continues running when desired state key is absent
+      - explicit delete intent required before stopping service
+
+  - id: test.pkill_uses_x_flag_not_f_flag
+    title: pkill must use -x (exact match) not -f (argv match)
+    protects:
+      invariants: []
+      failure_modes:
+        - mcp.orphan_port_hold
+    required_for_changes:
+      paths:
+        - packages/metadata/**
+        - golang/node_agent/**
+      task_terms:
+        - pkill
+        - process kill
+        - service stop
+        - ExecStartPre
+    commands:
+      - grep -r "pkill -f" packages/metadata/ golang/ && exit 1 || exit 0
+    evidence:
+      - pkill -f matches parent shell argv and causes self-SIGKILL
+      - pkill -x matches exact binary name only
+
+  - id: test.install_result_committed_to_etcd
+    title: Install success must be committed to etcd before returning
+    protects:
+      invariants:
+        - infra.heartbeat_not_desired_authority
+      failure_modes:
+        - install.result.partial_commit
+    required_for_changes:
+      paths:
+        - golang/node_agent/**
+      task_terms:
+        - install
+        - commit
+        - etcd
+        - node agent
+    commands:
+      - go test ./golang/node_agent/... -run InstallResult
+    evidence:
+      - etcd write succeeds before install RPC returns
+      - partial commit is detected and retried

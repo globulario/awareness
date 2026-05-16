@@ -1,0 +1,221 @@
+proposal:
+    id: etcd-control-plane-cascade-INC-etcd-nospace
+    source_incident: etcd-nospace-control-plane-cascade
+    status: PROMOTED
+    created_at: "2026-05-07T20:30:00Z"
+failure_modes:
+    - id: etcd.nospace_alarm
+      title: 'etcd NOSPACE alarm: database space exceeded — all writes rejected, control-plane cascade begins'
+      severity: critical
+      symptoms:
+        - '''mvcc: database space exceeded'' appears in etcd logs'
+        - etcd rejects all write RPCs with NOSPACE error
+        - etcd leader begins losing heartbeat quorum
+        - controller cannot renew leader lease
+        - workflow dispatch times out or hangs
+        - reconciler stalls — no desired-state changes applied
+      root_cause: |
+        etcd database grew beyond its configured quota (default 2 GiB). Common causes:
+        excessive revision history accumulation, write storm from a reconcile loop, or
+        compaction/defragmentation not running on schedule. Once the NOSPACE alarm fires,
+        etcd rejects ALL writes — including leader heartbeats — causing leader loss and a
+        cascading control-plane failure affecting controller, workflow, and reconciler.
+      architecture_fix: |
+        Fix order is strict — do not skip steps:
+        1. etcdctl alarm list   → confirm NOSPACE is active
+        2. REV=$(etcdctl endpoint status --write-out=json | jq -r '.[0].Status.header.revision')
+           etcdctl compact $REV → compact revision history
+        3. etcdctl defrag --endpoints=<all>  → release disk space
+        4. Verify disk usage dropped below quota
+        5. etcdctl alarm disarm   → ONLY after disk is below quota
+        6. etcdctl endpoint health → confirm all members healthy
+        7. etcdctl endpoint status --write-out=table → confirm stable leader
+        8. Watch controller logs for "acquired leader lease"
+        9. Watch workflow logs for successful dispatch
+      related_invariants:
+        - etcd.must_not_exceed_quota
+      related_services:
+        - etcd
+        - cluster_controller
+        - workflow
+      forbidden_fixes:
+        - etcd.disarm_before_compact
+        - etcd.restart_nodes_without_nospace_fix
+      required_tests:
+        - TestOfflineDiagnose_EtcdNOSPACE_MapsToEtcdFailureMode
+        - TestOfflineDiagnose_EtcdNOSPACE_DoesNotMapToObjectstore
+        - TestCausalChain_EtcdNOSPACE_ProducesControlPlaneCascade
+    - id: etcd.leader_instability
+      title: 'etcd leader instability: repeated leader loss caused by NOSPACE or disk I/O pressure'
+      severity: critical
+      symptoms:
+        - '''lost leader'' in etcd logs'
+        - '''elected leader'' appears repeatedly within short interval'
+        - etcd leader_id changes in etcdctl endpoint status output
+        - controller lease renewal fails during leader instability window
+        - no controller holds authoritative lease — reconciler stalls
+      root_cause: |
+        etcd leader cannot commit entries or send heartbeats when the NOSPACE alarm is
+        active (writes rejected) or when disk I/O latency exceeds the election timeout.
+        Repeated leader elections cascade: the controller cannot renew its etcd lease,
+        the lease expires, all controllers enter re-election, and no controller is
+        authoritative for the duration. Workflow dispatch RPCs time out.
+      architecture_fix: |
+        1. Resolve the upstream cause first (NOSPACE alarm or disk I/O pressure)
+        2. etcdctl endpoint status --write-out=table → watch leader_id until stable
+        3. Wait for no "lost leader" / "elected leader" messages for ≥60s
+        4. Only then look at controller/workflow — do not restart them during instability
+      related_invariants:
+        - etcd.quorum_must_be_stable_before_controller_action
+      related_services:
+        - etcd
+        - cluster_controller
+      forbidden_fixes:
+        - etcd.restart_nodes_without_nospace_fix
+        - controller.restart_before_etcd_stable
+      required_tests:
+        - TestOfflineDiagnose_EtcdLeaderLoss_MapsToEtcdLeaderInstability
+        - TestCausalChain_LeaderLoss_After_NOSPACE
+    - id: controller.lease_expired_due_to_etcd_instability
+      title: controller leader lease expired because etcd cannot commit writes during NOSPACE or leader instability
+      severity: high
+      symptoms:
+        - '''lease expired, attempting re-election'' in controller logs'
+        - no controller holds the leader lease — all controllers in re-election loop
+        - reconciler produces no changes to desired state
+        - workflow steps are not dispatched
+        - etcd shows concurrent write attempts from multiple controller instances
+      root_cause: |
+        The cluster controller renews its leader lease by writing to etcd. When etcd
+        cannot commit writes (NOSPACE alarm) or has no stable leader, lease renewal fails.
+        All controller instances detect lease expiry and attempt re-election simultaneously,
+        flooding etcd with new lease write attempts — which also fail if NOSPACE is still
+        active. The result is a re-election storm that continues until etcd is healthy.
+      architecture_fix: |
+        1. Verify etcd is healthy first: etcdctl alarm list (must be empty), etcdctl endpoint health (all healthy)
+        2. Watch controller logs for "acquired leader lease" — do not intervene before this
+        3. Do NOT restart controller processes before etcd is stable — restarts add more lease write load
+        4. If lease not acquired within 5 min after etcd stabilises, check for split-brain (two leaders)
+      related_invariants:
+        - etcd.quorum_must_be_stable_before_controller_action
+        - controller.single_leader_invariant
+      related_services:
+        - cluster_controller
+        - etcd
+      forbidden_fixes:
+        - controller.restart_before_etcd_stable
+        - controller.kill_to_clear_lease_contention
+      required_tests:
+        - TestOfflineDiagnose_ControllerLeaseExpired_MapsToCorrectFailureMode
+        - TestSuggestIncident_ControlPlaneCascade_EtcdFirst
+    - id: workflow.dispatch_timeout_due_to_control_plane_instability
+      title: workflow dispatch timeout — terminal symptom of upstream etcd or controller instability, not the root cause
+      severity: high
+      symptoms:
+        - '''context deadline exceeded dispatching workflow step'''
+        - '''workflow stuck at CONVERGING'''
+        - workflow runs remain in ACTIVE/CONVERGING state indefinitely
+        - no new workflow steps dispatched
+        - globular workflow list-runs shows blocked workflows piling up
+      root_cause: |
+        The workflow service dispatches steps by writing to etcd and coordinating with the
+        cluster controller. When etcd rejects writes (NOSPACE) or no controller holds the
+        leader lease, dispatch RPCs time out. This failure is always a symptom — the root
+        cause is upstream in etcd or the controller.
+        WARNING: Do not fix workflow before fixing etcd and controller.
+      architecture_fix: |
+        Fix order is strict:
+        1. Confirm etcd NOSPACE is cleared (alarm list empty, endpoint health all healthy)
+        2. Confirm controller has acquired leader lease (watch controller logs)
+        3. Workflow dispatch typically recovers automatically within 30-60s after controller stabilises
+        4. If workflows remain CONVERGING >5min post-stabilisation:
+           globular workflow list-runs --status blocked
+           → manually re-trigger or advance blocked workflows
+        NEVER restart workflow service before etcd and controller are stable.
+      related_invariants:
+        - workflow.dispatch_requires_stable_control_plane
+      related_services:
+        - workflow
+        - cluster_controller
+        - etcd
+      forbidden_fixes:
+        - workflow.restart_before_control_plane_stable
+        - workflow.treat_as_root_cause
+      required_tests:
+        - TestOfflineDiagnose_WorkflowTimeout_MapsToControlPlaneInstability
+        - TestSuggestIncident_FixOrder_EtcdBeforeWorkflow
+forbidden_fixes:
+    - id: etcd.disarm_before_compact
+      title: etcd alarm disarm before compact+defrag — alarm re-fires immediately
+      summary: |
+        Running 'etcdctl alarm disarm' before compacting revision history and defragmenting
+        the database does not fix the underlying disk pressure. The database is still above
+        quota, so the alarm re-fires immediately and the control-plane cascade resumes.
+        Always compact and defrag first; verify disk usage drops below quota; then disarm.
+      related_invariants:
+        - etcd.must_not_exceed_quota
+    - id: etcd.restart_nodes_without_nospace_fix
+      title: restart etcd nodes to resolve leader instability without fixing NOSPACE — nodes rejoin and immediately re-enter instability
+      summary: |
+        Restarting etcd nodes when NOSPACE is active does not help. The restarted node
+        rejoins the cluster but immediately encounters the same alarm condition and cannot
+        commit writes. Leader election continues to fail. Resolve the disk pressure first.
+      related_invariants:
+        - etcd.must_not_exceed_quota
+    - id: controller.restart_before_etcd_stable
+      title: restart controller before etcd is healthy — floods etcd with new lease write attempts
+      summary: |
+        Restarting controller processes while etcd is in NOSPACE or leader-instability state
+        causes each restarted instance to immediately attempt to write a new leader lease to
+        etcd. These writes all fail (NOSPACE) or contend during re-election, amplifying the
+        load on an already-stressed etcd cluster and delaying recovery.
+      related_invariants:
+        - etcd.quorum_must_be_stable_before_controller_action
+    - id: controller.kill_to_clear_lease_contention
+      title: kill controller processes to 'clear' lease contention — worsens the re-election storm
+      summary: |
+        Killing controller processes does not clear lease contention — the killed process
+        held the lease, and killing it without etcd being healthy means the lease expires
+        and all remaining controllers immediately attempt re-election, adding more write
+        pressure. Only etcd stability resolves lease contention.
+      related_invariants:
+        - etcd.quorum_must_be_stable_before_controller_action
+    - id: workflow.restart_before_control_plane_stable
+      title: restart or re-run workflows before etcd NOSPACE is cleared and controller lease is stable
+      summary: |
+        Restarting the workflow service or retrying workflow steps while etcd and controller
+        are unstable causes immediate re-failure: the new dispatch attempt also times out
+        because the control plane cannot serve it. Resolve etcd → controller → then workflow.
+      related_invariants:
+        - workflow.dispatch_requires_stable_control_plane
+    - id: workflow.treat_as_root_cause
+      title: treat workflow dispatch timeout as root cause and fix it first
+      summary: |
+        Workflow dispatch timeouts are always a terminal symptom of control-plane instability.
+        The correct fix order is: etcd → controller → workflow. Fixing or restarting the
+        workflow service first will not unblock it — it will re-fail immediately because the
+        underlying etcd/controller issue is unresolved.
+      related_invariants:
+        - workflow.dispatch_requires_stable_control_plane
+required_tests:
+    - TestOfflineDiagnose_EtcdNOSPACE_MapsToEtcdFailureMode
+    - TestOfflineDiagnose_EtcdNOSPACE_DoesNotMapToObjectstore
+    - TestOfflineDiagnose_EtcdLeaderLoss_MapsToEtcdLeaderInstability
+    - TestOfflineDiagnose_ControllerLeaseExpired_MapsToCorrectFailureMode
+    - TestOfflineDiagnose_WorkflowTimeout_MapsToControlPlaneInstability
+    - TestCausalChain_EtcdNOSPACE_ProducesControlPlaneCascade
+    - TestSuggestIncident_FixOrder_EtcdBeforeWorkflow
+evidence:
+    source_incident: etcd-nospace-control-plane-cascade
+    symptoms:
+        - 'mvcc: database space exceeded — etcd NOSPACE alarm'
+        - etcd leader lost repeatedly in logs
+        - controller lease expired — attempting re-election
+        - 'workflow dispatch: context deadline exceeded'
+        - workflow stuck at CONVERGING
+    state_deltas:
+        - 'Before fix: etcd in NOSPACE; no leader; controller in re-election storm; workflows blocked'
+        - 'After fix: etcdctl alarm list empty; all endpoints healthy; controller acquired lease; workflows dispatching'
+    manual_repairs:
+        - etcdctl compact <rev>; etcdctl defrag; etcdctl alarm disarm; etcdctl endpoint health
+learn_source: learn_from_fix

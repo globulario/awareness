@@ -1,0 +1,42 @@
+id: ERRCAT-topology_gated_package_false_drift
+type: ErrorCategory
+name: topology_gated_package_false_drift
+severity: warning
+summary: Drift scanner and target selection use different eligibility rules, causing false missing_package for topology-gated packages.
+
+signatures:
+  - "missing_package loop for inactive infra member"
+  - "scan_drift reports drift for package not eligible"
+  - "topology gate"
+
+symptoms:
+  - id: SYM-missing_package_loop_for_inactive_infra_member
+    summary: "missing_package loop for an inactive infrastructure member."
+  - id: SYM-scan_drift_reports_drift_for_ineligible_package
+    summary: "scan_drift reports drift for a package that is not eligible on this node."
+
+causes:
+  - id: CAUSE-drift_scanner_and_target_selection_use_different_eligibility
+    summary: "Drift scanner and target selection use different eligibility rules — one checks topology gate, the other does not."
+
+resolutions:
+  - id: RES-use_shared_isactiveinframember_function
+    summary: "Use a single shared isActiveInfraMember / eligibility function for both drift scanner and target selection."
+  - id: RES-drift_and_target_selection_must_agree_on_node_set
+    summary: "Drift scanner and selectReleaseTargets must agree on the eligible node set."
+
+wrong_fixes:
+  - id: WRONG-ignore_all_missing_package_drift
+    summary: "Do not ignore all missing_package drift — only topology-gated inactive members are exempt."
+  - id: WRONG-install_infra_packages_on_inactive_nodes
+    summary: "Do not install infrastructure packages on inactive/ineligible nodes to silence drift."
+  - id: WRONG-remove_topology_gating
+    summary: "Do not remove topology gating — it prevents quorum violations."
+
+tests:
+  - id: REGTEST-inactive_member_does_not_emit_missing_package_drift
+    summary: "Inactive infrastructure member does not emit missing_package drift."
+  - id: REGTEST-active_member_missing_package_emits_drift
+    summary: "Active member with missing eligible package emits missing_package drift."
+  - id: REGTEST-scan_drift_and_selectreleasetargets_agree
+    summary: "scan_drift and selectReleaseTargets return the same eligible node set."
