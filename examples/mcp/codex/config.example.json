@@ -1,0 +1,13 @@
+{
+  "_comment": "Generic stdio MCP configuration example. The exact Codex config format may vary across versions — consult Codex documentation for your version. Replace /absolute/path/to/your/project with the absolute path to the directory containing your .awareness.yaml file.",
+  "mcpServers": {
+    "awareness": {
+      "command": "awareness-mcp",
+      "args": [
+        "--project-root",
+        "/absolute/path/to/your/project"
+      ],
+      "transport": "stdio"
+    }
+  }
+}

@@ -32,6 +32,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/globulario/awareness/bundle"
 	"github.com/globulario/awareness/preflight"
 	"github.com/globulario/awareness/project"
 	"github.com/globulario/awareness/runtime"
@@ -470,6 +471,288 @@ func registerTools(srv *mcpServer) {
 			"query":          query,
 			"matches":        matches,
 			"match_count":    len(matches),
+		}, nil
+	})
+
+	// ── awareness_graph_query ──────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_graph_query",
+		Description: "Query awareness graph nodes when a compiled graph exists. Returns matching nodes with their kind, label, and properties. Returns {ok:false, reason:\"graph_not_available\"} when no graph file is found in the project graph cache.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {
+					Type:        "string",
+					Description: "Keywords to match against node IDs, kinds, labels, and properties.",
+				},
+				"limit": {
+					Type:        "number",
+					Description: "Maximum number of results to return. Default 20.",
+					Default:     20,
+				},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		limit := 20
+		if v, ok := args["limit"].(float64); ok && v > 0 {
+			limit = int(v)
+		}
+
+		cacheDir := prof.Graph.CacheDir
+
+		if p := graphJSONPath(cacheDir); p != "" {
+			nodes, err := queryGraphJSON(p, query, limit)
+			if err != nil {
+				return map[string]interface{}{
+					"ok":     false,
+					"reason": "graph_read_error",
+					"detail": err.Error(),
+				}, nil
+			}
+			return map[string]interface{}{
+				"ok":         true,
+				"source":     p,
+				"query":      query,
+				"nodes":      nodes,
+				"node_count": len(nodes),
+			}, nil
+		}
+
+		if p := graphDBPath(cacheDir); p != "" {
+			return map[string]interface{}{
+				"ok":     false,
+				"reason": "graph_binary_format",
+				"detail": "graph.db found at " + p + " but binary graph format requires the services-side graph engine. Use awareness_context for YAML-based knowledge queries.",
+			}, nil
+		}
+
+		return map[string]interface{}{
+			"ok":         false,
+			"reason":     "graph_not_available",
+			"cache_dir":  cacheDir,
+			"suggestion": "Run 'awareness graph build' (services-side) to compile a graph, or use awareness_context for YAML-based knowledge queries.",
+		}, nil
+	})
+
+	// ── awareness_node_context ─────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_node_context",
+		Description: "Return awareness context for a specific file path or knowledge node ID. Returns related invariants, failure modes, and forbidden fixes from the project knowledge files.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"path": {
+					Type:        "string",
+					Description: "File path (relative or absolute) to look up context for.",
+				},
+				"node_id": {
+					Type:        "string",
+					Description: "Awareness node ID (e.g. 'invariant:process.state.determinism') to look up.",
+				},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		path, _ := args["path"].(string)
+		nodeID, _ := args["node_id"].(string)
+
+		ref := strings.TrimSpace(path + " " + nodeID)
+		if ref == "" {
+			return nil, fmt.Errorf("one of 'path' or 'node_id' is required")
+		}
+
+		invariants := loadInvariants(prof.Awareness.Invariants)
+		failureModes := loadFailureModes(prof.Awareness.FailureModes)
+		forbiddenFixes := loadForbiddenFixes(prof.Awareness.ForbiddenFixes)
+
+		matchedInvariants := searchInvariants(invariants, ref, 10)
+		matchedFailureModes := searchFailureModes(failureModes, ref, 10)
+
+		// forbidden fixes: simple text search
+		terms := knowledgeTerms(ref)
+		var matchedFixes []ForbiddenFixEntry
+		for _, f := range forbiddenFixes {
+			blob := strings.ToLower(f.ID + " " + f.Title + " " + f.Description + " " + strings.Join(f.Tags, " "))
+			if countMatches(blob, terms) > 0 {
+				matchedFixes = append(matchedFixes, f)
+				if len(matchedFixes) >= 10 {
+					break
+				}
+			}
+		}
+
+		var warnings []string
+		if len(prof.Awareness.Invariants) == 0 {
+			warnings = append(warnings, "no invariants files configured in profile")
+		}
+
+		return map[string]interface{}{
+			"project":          prof.Name,
+			"ref":              ref,
+			"invariants":       matchedInvariants,
+			"failure_modes":    matchedFailureModes,
+			"forbidden_fixes":  matchedFixes,
+			"invariant_count":  len(matchedInvariants),
+			"failure_mode_count": len(matchedFailureModes),
+			"forbidden_fix_count": len(matchedFixes),
+			"warnings":         warnings,
+		}, nil
+	})
+
+	// ── awareness_invariant_lookup ─────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_invariant_lookup",
+		Description: "Search project invariants by keyword. Returns matching invariants with ID, title, description, severity, tags, and source path.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {
+					Type:        "string",
+					Description: "Keywords to search for in invariant IDs, titles, descriptions, and tags.",
+				},
+				"limit": {
+					Type:        "number",
+					Description: "Maximum results to return. Default 10.",
+					Default:     10,
+				},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		limit := 10
+		if v, ok := args["limit"].(float64); ok && v > 0 {
+			limit = int(v)
+		}
+
+		all := loadInvariants(prof.Awareness.Invariants)
+		matched := searchInvariants(all, query, limit)
+
+		return map[string]interface{}{
+			"project":     prof.Name,
+			"query":       query,
+			"invariants":  matched,
+			"total_loaded": len(all),
+			"match_count": len(matched),
+			"source_files": prof.Awareness.Invariants,
+		}, nil
+	})
+
+	// ── awareness_failure_mode_lookup ──────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_failure_mode_lookup",
+		Description: "Search project failure modes by keyword. Returns matching failure modes with ID, title, description, symptoms, severity, tags, and source path.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"query": {
+					Type:        "string",
+					Description: "Keywords to search for in failure mode IDs, titles, descriptions, symptoms, and tags.",
+				},
+				"limit": {
+					Type:        "number",
+					Description: "Maximum results to return. Default 10.",
+					Default:     10,
+				},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		query, _ := args["query"].(string)
+		limit := 10
+		if v, ok := args["limit"].(float64); ok && v > 0 {
+			limit = int(v)
+		}
+
+		all := loadFailureModes(prof.Awareness.FailureModes)
+		matched := searchFailureModes(all, query, limit)
+
+		return map[string]interface{}{
+			"project":      prof.Name,
+			"query":        query,
+			"failure_modes": matched,
+			"total_loaded": len(all),
+			"match_count":  len(matched),
+			"source_files": prof.Awareness.FailureModes,
+		}, nil
+	})
+
+	// ── awareness_bundle_inspect ───────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_bundle_inspect",
+		Description: "Inspect a generated Awareness bundle directory. Reads bundle.json, validates the manifest, and returns a summary including schema version, project name, file counts, and any warnings.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"path": {
+					Type:        "string",
+					Description: "Absolute or relative path to the bundle directory (the directory containing bundle.json).",
+				},
+			},
+			Required: []string{"path"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		bundlePath, _ := args["path"].(string)
+		if strings.TrimSpace(bundlePath) == "" {
+			return nil, fmt.Errorf("path is required")
+		}
+
+		manifestPath := bundlePath + "/bundle.json"
+		data, err := os.ReadFile(manifestPath)
+		if err != nil {
+			return map[string]interface{}{
+				"ok":     false,
+				"reason": "manifest_not_found",
+				"path":   bundlePath,
+				"detail": err.Error(),
+			}, nil
+		}
+
+		var m bundle.BundleManifest
+		if err := json.Unmarshal(data, &m); err != nil {
+			return map[string]interface{}{
+				"ok":     false,
+				"reason": "manifest_parse_error",
+				"path":   bundlePath,
+				"detail": err.Error(),
+			}, nil
+		}
+
+		var warnings []string
+		if err := m.Validate(); err != nil {
+			warnings = append(warnings, "validation: "+err.Error())
+		}
+
+		// Count files in bundle directory.
+		entries, _ := os.ReadDir(bundlePath)
+		var fileList []string
+		for _, e := range entries {
+			if !e.IsDir() {
+				fileList = append(fileList, e.Name())
+			}
+		}
+
+		return map[string]interface{}{
+			"ok":                       len(warnings) == 0,
+			"path":                     bundlePath,
+			"schema_version":           m.SchemaVersion,
+			"project_name":             m.ProjectName,
+			"project_kind":             m.ProjectKind,
+			"source_revision":          m.SourceRevision,
+			"generated_at":             m.GeneratedAt,
+			"generator_version":        m.GeneratorVersion,
+			"invariants_paths":         m.InvariantsPaths,
+			"failure_modes_paths":      m.FailureModesPaths,
+			"forbidden_fixes_paths":    m.ForbiddenFixesPaths,
+			"runtime_signals_included": m.RuntimeSignalsIncluded,
+			"invariants_count":         len(m.InvariantsPaths),
+			"failure_modes_count":      len(m.FailureModesPaths),
+			"forbidden_fixes_count":    len(m.ForbiddenFixesPaths),
+			"bundle_files":             fileList,
+			"warnings":                 warnings,
 		}, nil
 	})
 }

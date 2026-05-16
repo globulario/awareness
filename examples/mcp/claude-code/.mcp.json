@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy this file to your project root as .mcp.json and replace /absolute/path/to/your/project with your actual project root path.",
+  "mcpServers": {
+    "awareness": {
+      "command": "awareness-mcp",
+      "args": [
+        "--project-root",
+        "/absolute/path/to/your/project"
+      ]
+    }
+  }
+}
