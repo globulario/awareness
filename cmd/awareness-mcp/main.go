@@ -404,7 +404,7 @@ func registerTools(srv *mcpServer) {
 			classification = preflight.ClassifyTask(task)
 		}
 
-		rawMatches := preflight.RawKnowledgeFallback(task, changedFiles, prof.Awareness.Root)
+		rawMatches := preflight.RawKnowledgeFallbackFromPaths(task, changedFiles, prof.Awareness)
 
 		var (
 			invariants           []string
@@ -441,7 +441,7 @@ func registerTools(srv *mcpServer) {
 		}
 
 		var requiredTests, preflightQuestions, questions []string
-		if items := preflight.ExtendedPreflightItems(task, changedFiles, prof.Awareness.Root); items != nil {
+		if items := preflight.ExtendedPreflightItemsFromPaths(task, changedFiles, prof.Awareness); items != nil {
 			requiredTests = items.RequiredTests
 			preflightQuestions = items.PreflightQuestions
 			questions = items.Questions
@@ -506,7 +506,7 @@ func registerTools(srv *mcpServer) {
 		if strings.TrimSpace(query) == "" {
 			return nil, fmt.Errorf("query is required")
 		}
-		matches := preflight.RawKnowledgeFallback(query, nil, prof.Awareness.Root)
+		matches := preflight.RawKnowledgeFallbackFromPaths(query, nil, prof.Awareness)
 		return map[string]interface{}{
 			"project":        prof.Name,
 			"awareness_root": prof.Awareness.Root,
@@ -840,7 +840,7 @@ func registerTools(srv *mcpServer) {
 		},
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		query, _ := args["query"].(string)
-		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		items := preflight.ExtendedPreflightItemsFromPaths(query, nil, prof.Awareness)
 		if items == nil {
 			return map[string]interface{}{"decisions": []string{}, "count": 0}, nil
 		}
@@ -866,7 +866,7 @@ func registerTools(srv *mcpServer) {
 		},
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		query, _ := args["query"].(string)
-		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		items := preflight.ExtendedPreflightItemsFromPaths(query, nil, prof.Awareness)
 		if items == nil {
 			return map[string]interface{}{"forbidden_assumptions": []string{}, "count": 0}, nil
 		}
@@ -892,7 +892,7 @@ func registerTools(srv *mcpServer) {
 		},
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		query, _ := args["query"].(string)
-		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		items := preflight.ExtendedPreflightItemsFromPaths(query, nil, prof.Awareness)
 		if items == nil {
 			return map[string]interface{}{"authority_rules": []string{}, "count": 0}, nil
 		}
@@ -925,7 +925,7 @@ func registerTools(srv *mcpServer) {
 				files = append(files, f)
 			}
 		}
-		items := preflight.ExtendedPreflightItems(task, files, prof.Awareness.Root)
+		items := preflight.ExtendedPreflightItemsFromPaths(task, files, prof.Awareness)
 		if items == nil {
 			return map[string]interface{}{"required_tests": []string{}, "count": 0}, nil
 		}
@@ -951,7 +951,7 @@ func registerTools(srv *mcpServer) {
 		},
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		query, _ := args["query"].(string)
-		items := preflight.ExtendedPreflightItems(query, nil, prof.Awareness.Root)
+		items := preflight.ExtendedPreflightItemsFromPaths(query, nil, prof.Awareness)
 		if items == nil {
 			return map[string]interface{}{"remediation_contracts": []string{}, "count": 0}, nil
 		}
