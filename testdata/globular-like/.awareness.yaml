@@ -1,0 +1,28 @@
+name: globular-services
+kind: distributed-platform
+root_markers:
+  - go.mod
+  - .git
+
+languages:
+  go: true
+  typescript: true
+  proto: true
+  yaml: true
+  markdown: true
+
+runtime:
+  enabled: true
+  adapter: globular
+
+graph:
+  cache_dir: .awareness/cache
+  freshness_ttl: 24h
+  invalidate_on:
+    - source_mtime_change
+    - awareness_file_mtime_change
+    - go_mod_change
+
+mcp:
+  project_aware: true
+  resolve_profile_from: cwd

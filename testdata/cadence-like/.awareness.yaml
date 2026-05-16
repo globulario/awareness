@@ -1,0 +1,28 @@
+name: cadence
+kind: application
+root_markers:
+  - go.mod
+  - package.json
+  - .git
+
+languages:
+  go: true
+  typescript: true
+  proto: true
+  yaml: true
+  markdown: true
+
+runtime:
+  enabled: false
+  adapter: null
+
+graph:
+  cache_dir: .awareness/cache
+  freshness_ttl: 24h
+  invalidate_on:
+    - source_mtime_change
+    - awareness_file_mtime_change
+
+mcp:
+  project_aware: true
+  resolve_profile_from: cwd
