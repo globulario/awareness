@@ -40,7 +40,64 @@ type DoctorReport struct {
 
 // DoctorFinding is a single health observation within a DoctorReport.
 type DoctorFinding struct {
-	Severity string `json:"severity"`
-	Code     string `json:"code"`
-	Message  string `json:"message"`
+	Severity    string `json:"severity"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	Description string `json:"description,omitempty"`
+	RuleRef     string `json:"rule_ref,omitempty"` // maps to InvariantRef in Globular
+	Suppressed  bool   `json:"suppressed,omitempty"`
+}
+
+// SourceInfo describes the health of one runtime data source.
+type SourceInfo struct {
+	Source  string `json:"source"`
+	Healthy bool   `json:"healthy"`
+	Noop    bool   `json:"noop"`
+}
+
+// ServiceStatusFact is a runtime service health observation.
+type ServiceStatusFact struct {
+	ServiceID string `json:"service_id"`
+	NodeID    string `json:"node_id"`
+	State     string `json:"state"`
+	Version   string `json:"version,omitempty"`
+}
+
+// WorkflowReceiptFact is a runtime workflow execution observation.
+type WorkflowReceiptFact struct {
+	WorkflowType string `json:"workflow_type"`
+	Status       string `json:"status"`
+	ServiceID    string `json:"service_id,omitempty"`
+	ErrorMsg     string `json:"error_msg,omitempty"`
+}
+
+// StateDeltaFact is a runtime desired-vs-installed state mismatch.
+type StateDeltaFact struct {
+	ServiceID        string `json:"service_id"`
+	NodeID           string `json:"node_id,omitempty"`
+	DeltaType        string `json:"delta_type"`
+	DesiredVersion   string `json:"desired_version,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+}
+
+// SignalOptions configures a CollectSignals call.
+type SignalOptions struct {
+	Window            time.Duration
+	KnownInvariants   []string
+	KnownFailureModes []string
+}
+
+// RuntimeSignals is an adapter-agnostic collection of live runtime evidence.
+type RuntimeSignals struct {
+	ID                  string
+	CapturedAt          time.Time
+	DoctorFindings      []DoctorFinding
+	ServiceStatuses     []ServiceStatusFact
+	WorkflowReceipts    []WorkflowReceiptFact
+	StateDeltas         []StateDeltaFact
+	MatchedInvariants   []string
+	MatchedFailureModes []string
+	Warnings            []string
+	SourceInfo          []SourceInfo
+	Facts               []Fact
 }

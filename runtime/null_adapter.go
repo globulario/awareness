@@ -34,3 +34,7 @@ func (NullAdapter) CollectFacts(_ context.Context, _ *project.ProjectProfile) ([
 func (NullAdapter) CollectEvidence(_ context.Context, _ *project.ProjectProfile, _ EvidenceQuery) ([]Evidence, error) {
 	return nil, nil
 }
+
+func (NullAdapter) CollectSignals(_ context.Context, _ *project.ProjectProfile, _ SignalOptions) (*RuntimeSignals, error) {
+	return &RuntimeSignals{}, nil
+}

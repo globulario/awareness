@@ -40,4 +40,9 @@ type Adapter interface {
 	// CollectEvidence returns evidence matching the query.
 	// NullAdapter returns nil, nil.
 	CollectEvidence(ctx context.Context, profile *project.ProjectProfile, query EvidenceQuery) ([]Evidence, error)
+
+	// CollectSignals gathers an adapter-agnostic set of live runtime signals.
+	// This is the primary method used by preflight and other generic paths.
+	// NullAdapter returns an empty RuntimeSignals, nil.
+	CollectSignals(ctx context.Context, profile *project.ProjectProfile, opts SignalOptions) (*RuntimeSignals, error)
 }
