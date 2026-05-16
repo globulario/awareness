@@ -20,6 +20,7 @@ import (
 
 	"github.com/globulario/awareness/bundle"
 	"github.com/globulario/awareness/graph"
+	"github.com/globulario/awareness/knowledge"
 	"github.com/globulario/awareness/preflight"
 	"github.com/globulario/awareness/project"
 	"github.com/globulario/awareness/runtime"
@@ -35,6 +36,10 @@ func main() {
 		runProfile(os.Args[2:])
 	case "preflight":
 		runPreflight(os.Args[2:])
+	case "assurance":
+		runAssurance(os.Args[2:])
+	case "selfcheck":
+		runSelfcheck(os.Args[2:])
 	case "bundle":
 		runBundle(os.Args[2:])
 	case "graph":
@@ -744,6 +749,107 @@ func splitTerms(q string) []string {
 	return terms
 }
 
+func runAssurance(args []string) {
+	projectRoot := ""
+	format := "text"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project-root":
+			if i+1 < len(args) {
+				i++
+				projectRoot = args[i]
+			}
+		case "--format":
+			if i+1 < len(args) {
+				i++
+				format = args[i]
+			}
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal("%v", err)
+	}
+	prof, err := project.ResolveProfile(cwd, project.ResolveOptions{ProjectRoot: projectRoot})
+	if err != nil {
+		fatal("%v", err)
+	}
+	base, err := knowledge.LoadFromPaths(
+		prof.Awareness.Invariants,
+		prof.Awareness.FailureModes,
+		prof.Awareness.ForbiddenFixes,
+		prof.Awareness.IncidentPatterns,
+		prof.Awareness.Root,
+	)
+	if err != nil {
+		fatal("load knowledge: %v", err)
+	}
+	if base == nil {
+		fatal("no knowledge loaded")
+	}
+	report := knowledge.Assurance(base)
+	switch format {
+	case "json":
+		b, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(b))
+	default:
+		for _, line := range report.Lines() {
+			fmt.Println(line)
+		}
+	}
+}
+
+func runSelfcheck(args []string) {
+	projectRoot := ""
+	format := "text"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project-root":
+			if i+1 < len(args) {
+				i++
+				projectRoot = args[i]
+			}
+		case "--format":
+			if i+1 < len(args) {
+				i++
+				format = args[i]
+			}
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal("%v", err)
+	}
+	prof, err := project.ResolveProfile(cwd, project.ResolveOptions{ProjectRoot: projectRoot})
+	if err != nil {
+		fatal("%v", err)
+	}
+	base, err := knowledge.LoadFromPaths(
+		prof.Awareness.Invariants,
+		prof.Awareness.FailureModes,
+		prof.Awareness.ForbiddenFixes,
+		prof.Awareness.IncidentPatterns,
+		prof.Awareness.Root,
+	)
+	if err != nil {
+		fatal("load knowledge: %v", err)
+	}
+	if base == nil {
+		fatal("no knowledge loaded")
+	}
+	report := knowledge.Selfcheck(base)
+	switch format {
+	case "json":
+		b, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(b))
+	default:
+		fmt.Println(report.String())
+	}
+	if !report.OK {
+		os.Exit(1)
+	}
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: awareness <command> [subcommand] [flags]")
 	fmt.Fprintln(os.Stderr, "")
@@ -751,6 +857,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  profile show    [--project-root PATH]")
 	fmt.Fprintln(os.Stderr, "  profile doctor  [--project-root PATH]")
 	fmt.Fprintln(os.Stderr, "  preflight       [--changed] [--project-root PATH] [--format text|json] [--task TEXT]")
+	fmt.Fprintln(os.Stderr, "  assurance       [--project-root PATH] [--format text|json]")
+	fmt.Fprintln(os.Stderr, "  selfcheck       [--project-root PATH] [--format text|json]")
 	fmt.Fprintln(os.Stderr, "  bundle build    --out PATH [--project-root PATH] [--revision REV] [--version VER]")
 	fmt.Fprintln(os.Stderr, "  graph build     [--project-root PATH] [--out PATH] [--sources]")
 	fmt.Fprintln(os.Stderr, "  graph query     [--project-root PATH] --query TEXT [--limit N]")

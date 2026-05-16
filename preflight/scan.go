@@ -107,6 +107,7 @@ func RawKnowledgeFallbackFromPaths(task string, files []string, paths project.Aw
 		paths.FailureModes,
 		paths.ForbiddenFixes,
 		paths.IncidentPatterns,
+		paths.Root,
 	)
 	if err != nil || base == nil {
 		return nil
@@ -152,6 +153,7 @@ func ExtendedPreflightItemsFromPaths(task string, files []string, paths project.
 		paths.FailureModes,
 		paths.ForbiddenFixes,
 		paths.IncidentPatterns,
+		paths.Root,
 	)
 	if err != nil || base == nil {
 		return nil

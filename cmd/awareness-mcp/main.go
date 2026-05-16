@@ -33,6 +33,7 @@ import (
 	"syscall"
 
 	"github.com/globulario/awareness/bundle"
+	"github.com/globulario/awareness/knowledge"
 	"github.com/globulario/awareness/preflight"
 	"github.com/globulario/awareness/project"
 	"github.com/globulario/awareness/runtime"
@@ -960,6 +961,57 @@ func registerTools(srv *mcpServer) {
 			"query":                query,
 			"remediation_contracts": items.RemediationContracts,
 			"count":                len(items.RemediationContracts),
+		}, nil
+	})
+
+	// ── awareness_assurance ──────────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_assurance",
+		Description: "Report Awareness knowledge coverage: counts of invariants, failure modes, forbidden fixes, decisions, and other knowledge types. Shows blind spots and uncovered areas.",
+		InputSchema: inputSchema{Type: "object", Properties: map[string]propSchema{}},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		base, err := knowledge.LoadFromPaths(
+			prof.Awareness.Invariants,
+			prof.Awareness.FailureModes,
+			prof.Awareness.ForbiddenFixes,
+			prof.Awareness.IncidentPatterns,
+			prof.Awareness.Root,
+		)
+		if err != nil || base == nil {
+			return map[string]interface{}{"error": fmt.Sprintf("load knowledge: %v", err)}, nil
+		}
+		report := knowledge.Assurance(base)
+		return map[string]interface{}{
+			"project": prof.Name,
+			"report":  report,
+			"lines":   report.Lines(),
+		}, nil
+	})
+
+	// ── awareness_selfcheck ──────────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "awareness_selfcheck",
+		Description: "Validate the health of the Awareness knowledge base. Detects empty, stale, orphaned, or disconnected knowledge entries. Returns ok=true when the knowledge base is healthy.",
+		InputSchema: inputSchema{Type: "object", Properties: map[string]propSchema{}},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		base, err := knowledge.LoadFromPaths(
+			prof.Awareness.Invariants,
+			prof.Awareness.FailureModes,
+			prof.Awareness.ForbiddenFixes,
+			prof.Awareness.IncidentPatterns,
+			prof.Awareness.Root,
+		)
+		if err != nil || base == nil {
+			return map[string]interface{}{"ok": false, "error": fmt.Sprintf("load knowledge: %v", err)}, nil
+		}
+		report := knowledge.Selfcheck(base)
+		return map[string]interface{}{
+			"project": prof.Name,
+			"ok":      report.OK,
+			"report":  report,
+			"summary": report.String(),
 		}, nil
 	})
 }

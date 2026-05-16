@@ -365,8 +365,15 @@ func Load(dir string) (*Base, error) {
 // are expanded to all *.yaml files within them (non-recursive). Missing files
 // and empty directories are silently skipped.
 //
+// An optional extendedRoot directory may be provided (as a single variadic
+// argument). When present, the seven extended knowledge files are loaded from
+// that directory by convention: decisions.yaml, forbidden_assumptions.yaml,
+// required_tests.yaml, subsystem_boundaries.yaml, authority_rules.yaml,
+// preflight_questions.yaml, and remediation_contracts.yaml. Missing files are
+// silently skipped so projects that do not use extended knowledge still work.
+//
 // This is the profile-aware counterpart to Load (which expects a single fixed dir).
-func LoadFromPaths(invariants, failureModes, forbiddenFixes, incidentPatterns []string) (*Base, error) {
+func LoadFromPaths(invariants, failureModes, forbiddenFixes, incidentPatterns []string, extendedRoot ...string) (*Base, error) {
 	b := &Base{}
 	var errs []error
 
@@ -401,6 +408,32 @@ func LoadFromPaths(invariants, failureModes, forbiddenFixes, incidentPatterns []
 			continue
 		}
 		b.IncidentPatterns = append(b.IncidentPatterns, f.IncidentPatterns...)
+	}
+
+	// Extended types: loaded from extendedRoot by convention when provided.
+	if len(extendedRoot) > 0 && extendedRoot[0] != "" {
+		dir := extendedRoot[0]
+		loadInto(filepath.Join(dir, "decisions.yaml"), &decisionsFile{}, func(v any) {
+			b.Decisions = append(b.Decisions, v.(*decisionsFile).Decisions...)
+		}, &errs)
+		loadInto(filepath.Join(dir, "forbidden_assumptions.yaml"), &forbiddenAssumptionsFile{}, func(v any) {
+			b.ForbiddenAssumptions = append(b.ForbiddenAssumptions, v.(*forbiddenAssumptionsFile).ForbiddenAssumptions...)
+		}, &errs)
+		loadInto(filepath.Join(dir, "required_tests.yaml"), &requiredTestsFile{}, func(v any) {
+			b.RequiredTests = append(b.RequiredTests, v.(*requiredTestsFile).RequiredTests...)
+		}, &errs)
+		loadInto(filepath.Join(dir, "subsystem_boundaries.yaml"), &subsystemBoundariesFile{}, func(v any) {
+			b.SubsystemBoundaries = append(b.SubsystemBoundaries, v.(*subsystemBoundariesFile).SubsystemBoundaries...)
+		}, &errs)
+		loadInto(filepath.Join(dir, "authority_rules.yaml"), &authorityRulesFile{}, func(v any) {
+			b.AuthorityRules = append(b.AuthorityRules, v.(*authorityRulesFile).AuthorityRules...)
+		}, &errs)
+		loadInto(filepath.Join(dir, "preflight_questions.yaml"), &preflightQuestionsFile{}, func(v any) {
+			b.PreflightQuestions = append(b.PreflightQuestions, v.(*preflightQuestionsFile).PreflightQuestions...)
+		}, &errs)
+		loadInto(filepath.Join(dir, "remediation_contracts.yaml"), &remediationContractsFile{}, func(v any) {
+			b.RemediationContracts = append(b.RemediationContracts, v.(*remediationContractsFile).RemediationContracts...)
+		}, &errs)
 	}
 
 	if len(errs) > 0 {
