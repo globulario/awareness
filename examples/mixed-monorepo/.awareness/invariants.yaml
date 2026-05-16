@@ -1,0 +1,39 @@
+invariants:
+  - id: proto.backwards.compatibility
+    title: Proto changes must be backwards-compatible
+    description: >
+      Fields may be added to proto messages. Fields must never be removed or
+      renumbered. Removing a field number causes deserialization failures in
+      clients that still send the old field. New enum values must not be added
+      to a closed enum used in a switch with a default-error case.
+    severity: critical
+    tags: [proto, api, backwards-compatibility]
+
+  - id: backend.frontend.contract.versioned
+    title: Backend API contract must be versioned before breaking changes
+    description: >
+      When a backend API changes in a way that breaks existing frontend
+      callers, a new API version must be introduced before the old version
+      is deprecated. The old version must remain live until all frontend
+      clients have migrated.
+    severity: critical
+    tags: [api, versioning, contract, frontend, backend]
+
+  - id: shared.types.single.source
+    title: Shared data types must have a single canonical source
+    description: >
+      Types shared between backend and frontend (request/response shapes,
+      domain models) must be defined once — in proto or a shared schema —
+      and generated/derived for each language. Duplicate type definitions
+      in Go and TypeScript diverge silently.
+    severity: error
+    tags: [types, proto, go, typescript, schema]
+
+  - id: docs.kept.current
+    title: Architecture docs must reflect the current system design
+    description: >
+      Every ADR (Architecture Decision Record) must be updated or superseded
+      when the decision it records is reversed. A doc that describes a
+      decommissioned approach is actively harmful; it misleads new contributors.
+    severity: warning
+    tags: [docs, adr, architecture]

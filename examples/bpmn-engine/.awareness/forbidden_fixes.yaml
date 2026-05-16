@@ -1,0 +1,31 @@
+forbidden_fixes:
+  - id: no.direct.token.state.write
+    title: Do not write token state directly to storage — use engine APIs
+    description: >
+      Writing token state directly to the store bypasses the engine's
+      transition validation and audit logging. Use the engine's
+      AdvanceToken or CompleteTask methods so every change is logged
+      and validated.
+    pattern: "store\\.Set.*token|db\\.Update.*token"
+    applies_to: [engine, token, storage]
+    rationale: Enforces token.lifecycle.explicit.
+
+  - id: no.time.now.in.condition
+    title: Do not use time.Now() inside a gateway condition evaluator
+    description: >
+      Gateway conditions must be deterministic. time.Now() inside a
+      condition makes replay non-deterministic: the same process definition
+      can route differently on different machines or at different times.
+      Use a frozen timestamp from the process context.
+    pattern: "time.Now()"
+    applies_to: [gateway, condition]
+    rationale: Enforces process.state.determinism.
+
+  - id: no.silent.subscription.drop
+    title: Do not silently drop subscriptions that cannot be registered
+    description: >
+      If the subscription registry returns an error, the catch event must
+      fail the process instance — not silently continue. Continuing without
+      a subscription means the message will never be received.
+    applies_to: [subscription, message, error]
+    rationale: Enforces subscription.cleanup.guaranteed.

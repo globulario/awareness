@@ -1,0 +1,30 @@
+forbidden_fixes:
+  - id: no.direct.state.mutation
+    title: Do not mutate React/Vue state objects directly
+    description: >
+      Assigning to state.items.push(...) or state.count++ bypasses the
+      change detection cycle. Use setState, immer produce, or the Vue
+      reactive setter. Direct mutation causes renders that miss the update.
+    pattern: "state\\..*\\.push\\(|state\\..*\\+\\+|state\\..*="
+    applies_to: [react, vue, state]
+    rationale: Enforces state.immutability.
+
+  - id: no.fetch.in.render
+    title: Do not call fetch() or axios directly inside a render function
+    description: >
+      Calling an API inside the render body runs on every re-render,
+      causing a cascade of requests. Move data fetching to useEffect,
+      useQuery, or a data service layer.
+    pattern: "fetch(|axios\\."
+    applies_to: [component, render, api]
+    rationale: Enforces component.data.separation.
+
+  - id: no.empty.catch
+    title: Do not use an empty catch block that swallows errors silently
+    description: >
+      catch(e) {} or catch(e) { console.log(e) } without surfacing the
+      error to the user or propagating it breaks the error-surfacing
+      contract. Either display an error state or rethrow.
+    pattern: "catch.*{\\s*}"
+    applies_to: [error, async]
+    rationale: Enforces error.surface.to.user.

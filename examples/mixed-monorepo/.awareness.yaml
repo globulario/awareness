@@ -1,0 +1,33 @@
+name: mixed-monorepo
+kind: application
+
+languages:
+  go: true
+  typescript: true
+  proto: true
+  yaml: true
+  markdown: true
+
+source_roots:
+  - backend
+  - frontend
+  - proto
+  - docs
+
+awareness:
+  root: .awareness
+  invariants:
+    - .awareness/invariants.yaml
+  failure_modes:
+    - .awareness/failure_modes.yaml
+  forbidden_fixes:
+    - .awareness/forbidden_fixes.yaml
+  decisions_dir: .awareness/decisions
+
+runtime:
+  enabled: false
+  adapter: null
+
+graph:
+  cache_dir: .awareness/cache
+  freshness_ttl: 24h

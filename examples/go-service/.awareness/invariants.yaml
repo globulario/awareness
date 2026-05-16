@@ -1,0 +1,51 @@
+invariants:
+  - id: idempotency.required
+    title: All mutating operations must be idempotent
+    description: >
+      Any RPC, HTTP handler, or background job that modifies state must produce
+      the same result when called more than once with the same input. Use
+      upsert semantics, deduplication keys, or conditional writes. A non-idempotent
+      mutation called twice on retry will corrupt state without returning an error.
+    severity: critical
+    tags: [idempotency, rpc, mutation]
+
+  - id: context.propagation.required
+    title: context.Context must be threaded through every call chain
+    description: >
+      Every function that performs I/O, holds a lock, or calls a downstream
+      service must accept a context.Context as its first argument and respect
+      cancellation. Blocking calls without context leave goroutines running
+      after the request is cancelled, causing resource leaks and incorrect
+      timeouts.
+    severity: critical
+    tags: [context, goroutine, timeout]
+
+  - id: goroutine.bounds.enforced
+    title: Goroutines must be bounded and always terminate
+    description: >
+      Every goroutine must have a known termination condition (context cancel,
+      channel close, or explicit signal). Spawning goroutines in a loop without
+      a bound or a done-signal leaks memory proportional to request volume.
+      Use a bounded worker pool or semaphore pattern.
+    severity: error
+    tags: [goroutine, resource, concurrency]
+
+  - id: no.global.mutable.state
+    title: Global mutable state is forbidden outside explicit registries
+    description: >
+      Package-level variables must be read-only after init(). Mutable global
+      state causes data races, makes tests non-deterministic, and breaks
+      concurrent request handling. Use dependency injection or per-instance
+      state instead.
+    severity: critical
+    tags: [concurrency, testing, state]
+
+  - id: interface.boundary.discipline
+    title: Interface boundaries must be minimal and stable
+    description: >
+      Exported interfaces may only grow (new methods break existing
+      implementations). New behaviour should be added via new interfaces or
+      embedding, not by extending existing ones. This keeps the boundary
+      stable for external implementations.
+    severity: error
+    tags: [api, interface, compatibility]

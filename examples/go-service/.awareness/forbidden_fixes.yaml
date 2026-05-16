@@ -1,0 +1,30 @@
+forbidden_fixes:
+  - id: no.time.sleep.in.handler
+    title: Do not use time.Sleep() inside an HTTP or RPC handler
+    description: >
+      time.Sleep() blocks the goroutine and ignores context cancellation.
+      Use time.After with a select, or context.WithTimeout, so the sleep
+      respects the request deadline.
+    pattern: "time.Sleep("
+    applies_to: [handler, rpc, http]
+    rationale: Enforces context.propagation.required.
+
+  - id: no.goroutine.in.init
+    title: Do not spawn goroutines in init() functions
+    description: >
+      Goroutines started in init() have no context, no shutdown signal, and
+      run before the program has fully initialised. They cannot be tested
+      or cancelled. Move background work to an explicit Start() method.
+    pattern: "func init"
+    applies_to: [goroutine, init]
+    rationale: Enforces goroutine.bounds.enforced.
+
+  - id: no.package.level.var.mutex
+    title: Do not use a package-level var to hold a sync.Mutex or sync.RWMutex
+    description: >
+      A package-level mutex is effectively a global lock. It serialises all
+      callers across the whole binary and cannot be tested in isolation.
+      Embed the mutex in the struct that owns the data it protects.
+    pattern: "var.*sync\\.Mutex|var.*sync\\.RWMutex"
+    applies_to: [concurrency, state]
+    rationale: Enforces no.global.mutable.state.

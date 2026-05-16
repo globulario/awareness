@@ -1,0 +1,38 @@
+invariants:
+  - id: process.state.determinism
+    title: Process execution must be deterministic
+    description: >
+      Given the same input tokens and process definition, execution must always
+      produce the same output tokens and audit trail. Any non-deterministic
+      side effect (wall-clock timestamps in conditions, random values) breaks
+      replay and makes audit trails unverifiable.
+    severity: critical
+    tags: [bpmn, determinism, replay]
+
+  - id: token.lifecycle.explicit
+    title: Token creation and destruction must be explicit and logged
+    description: >
+      Every token that is created (flow activation) or consumed (gateway, end
+      event) must generate an audit event. Silent token destruction leaves
+      the process instance with a missing token and no trace of what happened.
+    severity: critical
+    tags: [bpmn, token, audit]
+
+  - id: task.state.machine.enforced
+    title: Task state transitions must be validated
+    description: >
+      A task may only move through defined states: PENDING → RUNNING → DONE
+      or PENDING → RUNNING → FAILED. Invalid transitions (DONE → RUNNING,
+      PENDING → DONE) must be rejected with an error, not silently applied.
+    severity: error
+    tags: [bpmn, task, state-machine]
+
+  - id: subscription.cleanup.guaranteed
+    title: Event subscriptions must be cleaned up when the element completes
+    description: >
+      Every message or timer subscription must be cancelled when the catch
+      event that owns it completes or when the process instance terminates.
+      Dangling subscriptions receive messages after the instance is gone,
+      causing message loss and incorrect routing.
+    severity: error
+    tags: [bpmn, subscription, message, timer]

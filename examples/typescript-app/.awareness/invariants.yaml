@@ -1,0 +1,40 @@
+invariants:
+  - id: state.immutability
+    title: Component state must never be mutated directly
+    description: >
+      State in React/Vue/Svelte components must only be updated through the
+      framework's setter (setState, reactive assignments, store dispatches).
+      Direct mutation of state objects bypasses the change detection cycle,
+      causing stale renders and unpredictable UI behaviour.
+    severity: critical
+    tags: [state, component, react, vue]
+
+  - id: api.boundary.typed
+    title: All API calls must be typed at the call site
+    description: >
+      Responses from REST or GraphQL endpoints must be validated against a
+      TypeScript type or Zod schema before use. Untyped `any` at an API
+      boundary silently accepts malformed server responses and propagates
+      the error deep into the UI.
+    severity: error
+    tags: [api, typescript, validation]
+
+  - id: component.data.separation
+    title: Components must not own business logic
+    description: >
+      UI components should be presentation-only. Fetching, transforming, and
+      validating data belongs in hooks, stores, or services. A component
+      that mixes presentation with data logic cannot be unit-tested without
+      a live API.
+    severity: error
+    tags: [component, separation, testing]
+
+  - id: error.surface.to.user
+    title: Every async error must be surfaced to the user
+    description: >
+      A promise rejection or async/await error that is swallowed silently
+      leaves the user looking at stale data or a spinner that never resolves.
+      Every catch block must either display an error state or propagate the
+      error to a boundary that does.
+    severity: error
+    tags: [error, async, promise, ux]

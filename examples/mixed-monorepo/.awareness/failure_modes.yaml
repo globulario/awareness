@@ -1,0 +1,38 @@
+failure_modes:
+  - id: proto.field.removed
+    title: Proto field removed without deprecation causes client deserialization failure
+    description: >
+      A Go service removes a proto field and reuses its number for a new field.
+      TypeScript clients that send the old field number receive garbled data;
+      Go clients that expect the old field get the zero value with no error.
+      Both failures are silent and hard to diagnose.
+    symptoms:
+      - TypeScript client receives unexpected zero or nil values after a deploy
+      - proto decode errors in server logs with no change to the network layer
+    severity: critical
+    tags: [proto, api, compatibility, backend, frontend]
+
+  - id: type.drift.between.languages
+    title: Go and TypeScript type definitions drift after schema change
+    description: >
+      A developer updates the Go struct for a shared type but forgets to
+      regenerate the TypeScript bindings. The frontend continues to use the
+      old shape; missing fields appear as undefined at runtime.
+    symptoms:
+      - TypeScript property access returns undefined for newly added Go fields
+      - the generated client does not reflect recent proto changes
+    severity: error
+    tags: [proto, go, typescript, schema, generation]
+
+  - id: docs.stale.after.refactor
+    title: Architecture docs describe a system that no longer exists
+    description: >
+      A significant refactor renames packages or removes a service, but the
+      ADR and architecture diagram are not updated. New contributors follow
+      the stale docs, make decisions based on the old design, and introduce
+      regressions.
+    symptoms:
+      - ADR references a package path that no longer exists in the repo
+      - architecture diagram shows a removed service as active
+    severity: warning
+    tags: [docs, adr, refactor]

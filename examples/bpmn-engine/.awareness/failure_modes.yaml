@@ -1,0 +1,39 @@
+failure_modes:
+  - id: dead.process.instance
+    title: Process instance becomes permanently stuck with no active token
+    description: >
+      An exclusive gateway with no matching condition and no default flow
+      consumes the incoming token and activates nothing. The instance has
+      no active token and never reaches an end event or error event.
+      It is invisible to the monitor unless explicitly queried.
+    symptoms:
+      - process instance has no active tokens
+      - no end event, error event, or timeout was recorded
+      - instance never appears in the completed or failed lists
+    severity: critical
+    tags: [bpmn, gateway, token, stuck]
+
+  - id: duplicate.timer.fire
+    title: Timer fires twice due to at-least-once scheduler delivery
+    description: >
+      A timer scheduler using at-least-once delivery may fire the same
+      timer ID twice if the first delivery acknowledgement is lost. Without
+      idempotency checks, the engine advances the token twice, creating a
+      split-brain or duplicate end event.
+    symptoms:
+      - timer_fired event appears twice in audit log for the same timer_id
+      - process instance reaches end event twice
+    severity: error
+    tags: [bpmn, timer, idempotency]
+
+  - id: message.delivery.race
+    title: Message delivered before subscription is registered
+    description: >
+      If a message arrives between the time the catch event is reached and
+      the time the subscription is stored, the message is dropped. The
+      process instance waits forever at the catch event.
+    symptoms:
+      - catch event never advances after expected message sender confirms delivery
+      - message logged in sender audit but no matching subscription found
+    severity: error
+    tags: [bpmn, message, race, subscription]

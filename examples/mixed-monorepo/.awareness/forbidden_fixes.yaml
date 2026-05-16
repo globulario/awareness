@@ -1,0 +1,30 @@
+forbidden_fixes:
+  - id: no.reuse.field.number
+    title: Do not reuse a proto field number after the field is removed
+    description: >
+      Reusing a field number for a different type causes silent deserialization
+      corruption in clients that still have the old message in their cache
+      or are running an older binary. Reserve the number and use a new one.
+    pattern: "reserved\\s+\\d|field number"
+    applies_to: [proto, api]
+    rationale: Enforces proto.backwards.compatibility.
+
+  - id: no.manual.typescript.types
+    title: Do not hand-write TypeScript types that duplicate proto definitions
+    description: >
+      Manually duplicating a proto message as a TypeScript interface creates
+      a second source of truth that will drift. Run the proto generator and
+      use the generated types. If generation is not set up, set it up.
+    pattern: "interface.*Request|interface.*Response|interface.*Message"
+    applies_to: [typescript, proto, types]
+    rationale: Enforces shared.types.single.source.
+
+  - id: no.breaking.change.without.version.bump
+    title: Do not remove or rename a REST endpoint without bumping the API version
+    description: >
+      Removing or renaming an endpoint that the frontend or external clients
+      call causes immediate production failures. Introduce /v2/endpoint,
+      deprecate /v1/endpoint, and remove /v1 only after all callers have
+      migrated.
+    applies_to: [api, rest, versioning]
+    rationale: Enforces backend.frontend.contract.versioned.

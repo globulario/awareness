@@ -1,0 +1,30 @@
+name: bpmn-engine
+kind: bpmn-workflow-engine
+
+languages:
+  go: true
+  yaml: true
+  markdown: true
+
+source_roots:
+  - engine
+  - cmd
+  - testdata
+
+awareness:
+  root: .awareness
+  invariants:
+    - .awareness/invariants.yaml
+  failure_modes:
+    - .awareness/failure_modes.yaml
+  forbidden_fixes:
+    - .awareness/forbidden_fixes.yaml
+  decisions_dir: .awareness/decisions
+
+runtime:
+  enabled: false
+  adapter: null
+
+graph:
+  cache_dir: .awareness/cache
+  freshness_ttl: 24h

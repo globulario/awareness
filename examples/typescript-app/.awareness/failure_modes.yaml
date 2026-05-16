@@ -1,0 +1,38 @@
+failure_modes:
+  - id: stale.closure.in.effect
+    title: Stale closure captures outdated state in useEffect
+    description: >
+      A React effect that reads state or props from its closure without
+      declaring them as dependencies captures the value at mount time. When
+      the state changes, the effect still sees the old value, causing
+      incorrect behaviour that is difficult to reproduce.
+    symptoms:
+      - effect callback uses a variable whose value appears frozen
+      - ESLint react-hooks/exhaustive-deps warning on the dependency array
+      - behaviour changes after a full page reload but not on hot-reload
+    severity: error
+    tags: [react, effect, closure, state]
+
+  - id: api.any.propagation
+    title: Untyped API response propagates through the component tree
+    description: >
+      A REST or GraphQL response cast to `any` passes through component props
+      without validation. A server-side schema change that removes a field
+      causes a runtime error deep in the render tree, not at the API call site.
+    symptoms:
+      - TypeScript type errors appear in leaf components after API changes
+      - runtime TypeError on undefined property access in the render path
+    severity: error
+    tags: [typescript, api, any, type-safety]
+
+  - id: hidden.side.effect.in.render
+    title: Side effect triggered during render causes infinite re-render loop
+    description: >
+      Calling setState or dispatching a store action directly in the render
+      body (outside useEffect/useCallback) triggers a re-render immediately,
+      creating an infinite loop that freezes the browser tab.
+    symptoms:
+      - browser tab becomes unresponsive on component mount
+      - React "Maximum update depth exceeded" error in the console
+    severity: critical
+    tags: [react, side-effect, render, loop]

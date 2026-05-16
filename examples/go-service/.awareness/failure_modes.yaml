@@ -1,0 +1,40 @@
+failure_modes:
+  - id: goroutine.leak.on.cancel
+    title: Goroutine leaks when context is cancelled before channel receive
+    description: >
+      A goroutine blocking on a channel receive without a context select will
+      hang after the caller cancels. The goroutine cannot be collected because
+      nothing closes the channel. Under load, leaked goroutines exhaust file
+      descriptors and memory.
+    symptoms:
+      - goroutine count grows linearly with request rate under pprof
+      - heap profile shows channel receive stacks accumulating
+      - service becomes unresponsive after sustained traffic
+    severity: error
+    tags: [goroutine, context, channel, leak]
+
+  - id: double.write.on.retry
+    title: Non-idempotent handler writes duplicate records on retry
+    description: >
+      A handler that inserts a new row without checking for an existing record
+      will create duplicates when the client retries after a timeout. The
+      caller receives success on the second attempt but the database now has
+      two copies of the entity.
+    symptoms:
+      - duplicate entity IDs in the database
+      - count divergence between source-of-truth and derived views
+      - eventual consistency violation on downstream consumers
+    severity: critical
+    tags: [idempotency, database, retry]
+
+  - id: race.on.global.counter
+    title: Global counter race causes incorrect metrics
+    description: >
+      A package-level counter incremented with += from multiple goroutines
+      races without a mutex or atomic primitive. The count silently underreports
+      under the -race detector.
+    symptoms:
+      - data race detected under go test -race
+      - metric values fluctuate unpredictably in production
+    severity: error
+    tags: [concurrency, metrics, race]
