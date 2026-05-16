@@ -49,6 +49,19 @@ type MCPConfig struct {
 	ResolveProfileFrom string `yaml:"resolve_profile_from" json:"resolve_profile_from"`
 }
 
+// AwarenessPaths holds resolved absolute paths to the project's Awareness
+// knowledge files. All paths are absolute after ResolveProfile returns.
+type AwarenessPaths struct {
+	Root           string   `yaml:"root" json:"root"`
+	Invariants     []string `yaml:"invariants" json:"invariants"`
+	FailureModes   []string `yaml:"failure_modes" json:"failure_modes"`
+	ForbiddenFixes []string `yaml:"forbidden_fixes" json:"forbidden_fixes"`
+	CausalRules    []string `yaml:"causal_rules" json:"causal_rules"`
+	ContextAliases []string `yaml:"context_aliases" json:"context_aliases"`
+	DecisionsDir   string   `yaml:"decisions_dir" json:"decisions_dir"`
+	ProposalsDir   string   `yaml:"proposals_dir" json:"proposals_dir"`
+}
+
 // ProjectProfile is the fully resolved project identity.
 // All path fields are absolute. Obtained via ResolveProfile — do not
 // construct directly.
@@ -64,8 +77,11 @@ type ProjectProfile struct {
 	// RootMarkers are file/directory names that signal the project root
 	// (used as supplementary signals alongside .git).
 	RootMarkers []string `yaml:"root_markers" json:"root_markers"`
+	// SourceRoots are the directories (absolute) that contain project source code.
+	SourceRoots []string `yaml:"source_roots" json:"source_roots"`
 
 	Languages LanguageConfig `yaml:"languages" json:"languages"`
+	Awareness AwarenessPaths `yaml:"awareness" json:"awareness"`
 	Runtime   RuntimeConfig  `yaml:"runtime" json:"runtime"`
 	Graph     GraphConfig    `yaml:"graph" json:"graph"`
 	MCP       MCPConfig      `yaml:"mcp" json:"mcp"`

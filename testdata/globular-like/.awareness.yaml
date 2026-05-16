@@ -11,6 +11,27 @@ languages:
   yaml: true
   markdown: true
 
+source_roots:
+  - golang
+  - proto
+  - docs
+  - scripts
+
+awareness:
+  root: .awareness
+  invariants:
+    - .awareness/invariants.yaml
+  failure_modes:
+    - .awareness/failure_modes.yaml
+  forbidden_fixes:
+    - .awareness/forbidden_fixes.yaml
+  causal_rules:
+    - .awareness/causal_rules.yaml
+  context_aliases:
+    - .awareness/context_aliases.yaml
+  decisions_dir: .awareness/decisions
+  proposals_dir: .awareness/proposals
+
 runtime:
   enabled: true
   adapter: globular

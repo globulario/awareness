@@ -159,3 +159,41 @@ func TestResolveProfile_RootIsAbsolute(t *testing.T) {
 		t.Errorf("ConfigPath is not absolute: %s", prof.ConfigPath)
 	}
 }
+
+func TestResolveProfile_AwarenessPaths_Absolute(t *testing.T) {
+	td := testdataDir(t)
+	prof, err := project.ResolveProfile(filepath.Join(td, "cadence-like"), project.ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(prof.Awareness.Root) {
+		t.Errorf("Awareness.Root not absolute: %s", prof.Awareness.Root)
+	}
+	for _, p := range prof.Awareness.Invariants {
+		if !filepath.IsAbs(p) {
+			t.Errorf("Invariants path not absolute: %s", p)
+		}
+	}
+	if !filepath.IsAbs(prof.Awareness.DecisionsDir) {
+		t.Errorf("DecisionsDir not absolute: %s", prof.Awareness.DecisionsDir)
+	}
+	if !filepath.IsAbs(prof.Graph.CacheDir) {
+		t.Errorf("Graph.CacheDir not absolute: %s", prof.Graph.CacheDir)
+	}
+}
+
+func TestResolveProfile_SourceRoots_Absolute(t *testing.T) {
+	td := testdataDir(t)
+	prof, err := project.ResolveProfile(filepath.Join(td, "globular-like"), project.ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prof.SourceRoots) == 0 {
+		t.Error("expected non-empty SourceRoots")
+	}
+	for _, sr := range prof.SourceRoots {
+		if !filepath.IsAbs(sr) {
+			t.Errorf("SourceRoots entry not absolute: %s", sr)
+		}
+	}
+}

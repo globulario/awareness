@@ -12,6 +12,22 @@ languages:
   yaml: true
   markdown: true
 
+source_roots:
+  - .
+  - runtime
+  - model
+
+awareness:
+  root: .awareness
+  invariants:
+    - .awareness/invariants.yaml
+  failure_modes:
+    - .awareness/failure_modes.yaml
+  forbidden_fixes:
+    - .awareness/forbidden_fixes.yaml
+  decisions_dir: .awareness/decisions
+  proposals_dir: .awareness/proposals
+
 runtime:
   enabled: false
   adapter: null

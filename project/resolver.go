@@ -110,6 +110,32 @@ func loadFromDir(dir, cfgName string) (*ProjectProfile, error) {
 	prof.Root = abs
 	prof.ConfigPath = configPath
 
+	// Resolve relative paths against the project root.
+	resolve := func(rel string) string {
+		if rel == "" || filepath.IsAbs(rel) {
+			return rel
+		}
+		return filepath.Join(abs, rel)
+	}
+	resolveAll := func(rels []string) []string {
+		out := make([]string, len(rels))
+		for i, r := range rels {
+			out[i] = resolve(r)
+		}
+		return out
+	}
+
+	prof.Awareness.Root = resolve(prof.Awareness.Root)
+	prof.Awareness.Invariants = resolveAll(prof.Awareness.Invariants)
+	prof.Awareness.FailureModes = resolveAll(prof.Awareness.FailureModes)
+	prof.Awareness.ForbiddenFixes = resolveAll(prof.Awareness.ForbiddenFixes)
+	prof.Awareness.CausalRules = resolveAll(prof.Awareness.CausalRules)
+	prof.Awareness.ContextAliases = resolveAll(prof.Awareness.ContextAliases)
+	prof.Awareness.DecisionsDir = resolve(prof.Awareness.DecisionsDir)
+	prof.Awareness.ProposalsDir = resolve(prof.Awareness.ProposalsDir)
+	prof.SourceRoots = resolveAll(prof.SourceRoots)
+	prof.Graph.CacheDir = resolve(prof.Graph.CacheDir)
+
 	// Resolve freshness TTL from the raw string field.
 	if raw := prof.Graph.FreshnessTTLRaw; raw != "" {
 		d, err := time.ParseDuration(raw)
