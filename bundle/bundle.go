@@ -12,7 +12,10 @@
 //     bundle build time.
 package bundle
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // CurrentSchemaVersion is the schema version for bundles produced by this
 // module.
@@ -80,4 +83,13 @@ type BundleManifest struct {
 
 	// Deprecated: use RuntimeSignalsIncluded. Kept for bundle.v1 readers.
 	IncludesRuntimeOverlay bool `json:"includes_runtime_overlay,omitempty"`
+}
+
+// Validate reports any structural problems with the manifest.
+// A manifest is only valid when it has a non-empty SchemaVersion.
+func (m *BundleManifest) Validate() error {
+	if m.SchemaVersion == "" {
+		return errors.New("bundle manifest is missing schema_version")
+	}
+	return nil
 }

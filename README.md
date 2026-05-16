@@ -130,10 +130,91 @@ See [`docs/architecture.md`](docs/architecture.md) for the full migration plan a
 
 ---
 
+## Commands
+
+```bash
+# Profile
+awareness profile show    [--project-root PATH]
+awareness profile doctor  [--project-root PATH]
+
+# Preflight
+awareness preflight       [--changed] [--project-root PATH] [--format text|json] [--task TEXT]
+
+# Bundle
+awareness bundle build    --out PATH [--project-root PATH] [--revision REV] [--version VER]
+
+# MCP server (standalone, NullAdapter by default)
+awareness-mcp             [--project-root PATH]
+```
+
+---
+
+## MCP Server
+
+The standalone MCP server (`cmd/awareness-mcp`) exposes project Awareness tools over JSON-RPC 2.0 / stdio. It works without a Globular cluster.
+
+```bash
+awareness-mcp --project-root /path/to/project
+```
+
+Or via the source:
+
+```bash
+go run ./cmd/awareness-mcp --project-root /path/to/project
+```
+
+Tools exposed:
+
+| Tool | Description |
+|------|-------------|
+| `awareness_profile_doctor` | Static profile health check |
+| `awareness_preflight` | Pre-edit preflight with task and file analysis |
+| `awareness_runtime_status` | Adapter status (`runtime_disabled` for NullAdapter) |
+| `awareness_context` | Raw knowledge search across invariants/failure_modes/forbidden_fixes |
+
+---
+
+## Bundle Schema
+
+Every bundle includes a `bundle.json` manifest with `schema_version: "awareness.bundle.v1"`.
+
+Key fields:
+
+| Field | Description |
+|-------|-------------|
+| `schema_version` | Always `"awareness.bundle.v1"` |
+| `project_name` | From `.awareness.yaml` |
+| `invariants_paths` | Relative paths to invariant YAML files |
+| `failure_modes_paths` | Relative paths to failure_modes YAML files |
+| `forbidden_fixes_paths` | Relative paths to forbidden_fixes YAML files |
+| `runtime_signals_included` | `false` for NullAdapter bundles |
+| `includes_runtime_overlay` | v1 compatibility alias for `runtime_signals_included` |
+
+---
+
+## CI Integration
+
+See [`docs/ci/github-actions.md`](docs/ci/github-actions.md) for GitHub Actions examples.
+
+See [`docs/adoption/non-globular-project.md`](docs/adoption/non-globular-project.md) for the full adoption guide.
+
+---
+
+## Smoke Tests
+
+```bash
+bash scripts/smoke-cadence-mcp.sh
+```
+
+Verifies: import wall, CLI commands, awareness-mcp tools/list, runtime_disabled behavior.
+
+---
+
 ## Development
 
 ```bash
 go test ./...           # run all tests
 go build ./...          # build all packages
 go run ./cmd/awareness  # CLI smoke test
+go run ./cmd/awareness-mcp --project-root /path/to/project  # MCP server
 ```

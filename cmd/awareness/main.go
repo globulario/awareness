@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/globulario/awareness/bundle"
 	"github.com/globulario/awareness/preflight"
 	"github.com/globulario/awareness/project"
 	"github.com/globulario/awareness/runtime"
@@ -32,6 +33,8 @@ func main() {
 		runProfile(os.Args[2:])
 	case "preflight":
 		runPreflight(os.Args[2:])
+	case "bundle":
+		runBundle(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "awareness: unknown command %q\n", os.Args[1])
 		usage()
@@ -298,6 +301,92 @@ func runtimeStatus(p *project.ProjectProfile) string {
 	return "disabled"
 }
 
+func runBundle(args []string) {
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+		args = args[1:]
+	}
+	switch sub {
+	case "build":
+		runBundleBuild(args)
+	default:
+		fmt.Fprintf(os.Stderr, "awareness bundle: unknown subcommand %q\n", sub)
+		fmt.Fprintln(os.Stderr, "usage: awareness bundle build --out PATH [--project-root PATH] [--revision REV] [--version VER]")
+		os.Exit(1)
+	}
+}
+
+func runBundleBuild(args []string) {
+	var (
+		projectRoot string
+		outputDir   string
+		revision    string
+		version     string
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project-root":
+			if i+1 < len(args) {
+				i++
+				projectRoot = args[i]
+			}
+		case "--out":
+			if i+1 < len(args) {
+				i++
+				outputDir = args[i]
+			}
+		case "--revision":
+			if i+1 < len(args) {
+				i++
+				revision = args[i]
+			}
+		case "--version":
+			if i+1 < len(args) {
+				i++
+				version = args[i]
+			}
+		}
+	}
+	if outputDir == "" {
+		fatal("--out is required")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal("%v", err)
+	}
+	prof, err := project.ResolveProfile(cwd, project.ResolveOptions{ProjectRoot: projectRoot})
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	// Auto-detect revision from git if not provided.
+	if revision == "" {
+		if rev, err := runGit(prof.Root, "rev-parse", "--short", "HEAD"); err == nil {
+			revision = strings.TrimSpace(rev)
+		}
+	}
+
+	manifest, err := bundle.Build(prof, outputDir, bundle.BuildOptions{
+		GeneratorVersion: version,
+		Revision:         revision,
+	})
+	if err != nil {
+		fatal("bundle build: %v", err)
+	}
+
+	fmt.Printf("bundle: %s\n", outputDir)
+	fmt.Printf("schema: %s\n", manifest.SchemaVersion)
+	fmt.Printf("project: %s (%s)\n", manifest.ProjectName, manifest.ProjectKind)
+	fmt.Printf("revision: %s\n", manifest.SourceRevision)
+	fmt.Printf("invariants: %d\n", len(manifest.InvariantsPaths))
+	fmt.Printf("failure_modes: %d\n", len(manifest.FailureModesPaths))
+	fmt.Printf("forbidden_fixes: %d\n", len(manifest.ForbiddenFixesPaths))
+	fmt.Printf("runtime_signals: %v\n", manifest.RuntimeSignalsIncluded)
+	fmt.Println("status: ok")
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: awareness <command> [subcommand] [flags]")
 	fmt.Fprintln(os.Stderr, "")
@@ -305,6 +394,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  profile show    [--project-root PATH]")
 	fmt.Fprintln(os.Stderr, "  profile doctor  [--project-root PATH]")
 	fmt.Fprintln(os.Stderr, "  preflight       [--changed] [--project-root PATH] [--format text|json] [--task TEXT]")
+	fmt.Fprintln(os.Stderr, "  bundle build    --out PATH [--project-root PATH] [--revision REV] [--version VER]")
 }
 
 func fatal(format string, args ...any) {
