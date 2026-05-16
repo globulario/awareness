@@ -1,0 +1,33 @@
+forbidden_fixes:
+  - id: no.sleep.in.workflow
+    title: Do not add time.Sleep inside workflow step handlers
+    description: >
+      Sleep inside a workflow function blocks the workflow goroutine and
+      prevents Cadence from checkpointing. Use workflow.Sleep instead, which
+      is replay-safe and checkpointable.
+    pattern: "time.Sleep"
+    applies_to: [workflow]
+    rationale: >
+      Discovered after a production incident where a time.Sleep caused the
+      workflow goroutine to miss the heartbeat deadline, triggering a false
+      task timeout and duplicate execution.
+
+  - id: no.direct.task.state.assign
+    title: Do not assign Task.State directly
+    description: >
+      Use task.TransitionTo(newState) instead of task.State = newState.
+      Direct assignment bypasses the state machine validator and produces
+      invalid transitions that corrupt workflow history replay.
+    pattern: "\\.State\\s*="
+    applies_to: [model]
+    rationale: Enforces invariant task.state.transitions.
+
+  - id: no.goroutine.in.activity
+    title: Do not spawn unmanaged goroutines inside activity handlers
+    description: >
+      Activity handlers must complete synchronously. Unmanaged goroutines
+      outlive the activity context cancellation and may write to closed
+      channels or access freed resources.
+    pattern: "go func"
+    applies_to: [activity]
+    rationale: Enforces executor.resource.bounds and prevents task leaks.

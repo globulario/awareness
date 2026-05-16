@@ -1,0 +1,37 @@
+invariants:
+  - id: workflow.idempotency
+    title: Workflow steps must be idempotent
+    description: >
+      Every workflow step handler must be safe to replay. Re-execution of a
+      step with the same input must produce the same output and no duplicate
+      side effects. Cadence guarantees at-least-once delivery; idempotency is
+      the application contract.
+    severity: critical
+    tags: [workflow, correctness]
+
+  - id: task.state.transitions
+    title: Task state transitions must be explicit and validated
+    description: >
+      Task state changes (pending → running → completed/failed) must go through
+      the canonical state machine. Direct field assignment bypassing the
+      transition validator is forbidden.
+    severity: error
+    tags: [task, state-machine]
+
+  - id: executor.resource.bounds
+    title: Executor resource bounds must be enforced before scheduling
+    description: >
+      The executor must reject tasks that exceed configured CPU/memory limits
+      before scheduling them. Exceeding bounds at runtime is a recovery path,
+      not the expected path.
+    severity: warning
+    tags: [executor, resources]
+
+  - id: model.immutability
+    title: Task identity fields must not change after creation
+    description: >
+      The ID, WorkflowID, and ActivityType fields of a Task are set at creation
+      and must never be modified. Mutation of identity fields corrupts audit
+      logs and workflow replay.
+    severity: critical
+    tags: [task, immutability]

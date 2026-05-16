@@ -1,0 +1,39 @@
+failure_modes:
+  - id: workflow.replay.divergence
+    title: Workflow replay produces divergent results
+    description: >
+      A non-deterministic side effect was introduced in a workflow step —
+      random values, wall-clock reads, or non-deterministic iteration order —
+      causing replay to diverge from the original execution. Cadence detects
+      this as a NonDeterministicWorkflowError.
+    symptoms:
+      - NonDeterministicWorkflowError in worker logs
+      - workflow stuck in terminating state
+      - task queue draining but activities not progressing
+    severity: critical
+    tags: [workflow, replay]
+
+  - id: executor.task.leak
+    title: Executor holds tasks past their deadline without reporting failure
+    description: >
+      The executor accepted a task but neither completed it nor returned a
+      failure within the schedule-to-close timeout. The workflow engine
+      retried the task unnecessarily, causing duplicate execution.
+    symptoms:
+      - schedule-to-close timeout exceeded in metrics
+      - duplicate task execution in audit log
+      - activity result never committed to workflow history
+    severity: error
+    tags: [executor, deadline]
+
+  - id: model.concurrent.mutation
+    title: Task model mutated concurrently without locking
+    description: >
+      Two goroutines modified the same Task struct fields without
+      synchronisation. One write was lost and the task state became
+      inconsistent with the workflow history.
+    symptoms:
+      - data race detected by -race
+      - task state mismatch between executor and history service
+    severity: critical
+    tags: [task, concurrency]
