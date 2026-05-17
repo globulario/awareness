@@ -1,0 +1,155 @@
+# Frontend operator truth invariants
+#
+# These invariants govern what AI agents must verify before editing frontend (TypeScript/React)
+# code in operator-grade UIs. Awareness is NOT a browser runtime API — it does not run in the
+# browser. It is an AI-editing safety layer: the AI agent calls awareness before touching
+# frontend files, and awareness returns the relevant invariants and failure modes that constrain
+# what the edit may do.
+#
+# Core correction:
+#   awareness serves the AI agent before editing frontend code.
+#   the frontend does not call awareness.
+#   the awareness graph describes the frontend as the subject being analyzed.
+#
+# State authority rule: every visible UI state must be bound to the correct authority layer.
+#   runtime health  → live probe or health RPC (never desired state)
+#   installed state → installed-state record in etcd (never catalog)
+#   workflow result → workflow terminal state (never dispatch confirmation)
+#   RBAC permission → RBAC RPC result (never UI-local assumption)
+
+invariants:
+
+  - id: ui.visible_state_requires_authority
+    title: Every visible UI state must be bound to an explicit backend, workflow, RBAC, or local authority
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Every badge, status indicator, progress bar, action button, and warning in the operator
+      UI must bind its displayed value to a concrete authority: a runtime health RPC, an
+      installed-state record, a workflow terminal state, or an RBAC permission check.
+      A UI element that shows state without binding to an authority is displaying guesswork.
+      The binding must be verifiable: if you cannot name the source of truth for a UI element,
+      the element is wrong.
+    enforcement: |
+      Before editing any frontend component that renders service status, package state, action
+      availability, or workflow progress, verify that the data binding is wired to the correct
+      authority layer (runtime, installed, desired, workflow, RBAC). Check that the component
+      does not derive the displayed value from a different layer. Any mismatch is a violation
+      of this invariant.
+    forbidden_fixes:
+      - forbidden.runtime_from_desired
+      - forbidden.unknown_as_healthy
+      - ui.fix.derive_runtime_from_desired
+    required_tests:
+      - TestStatusBadge_BoundToRuntimeProbe_NotDesiredState
+      - TestInstalledIndicator_BoundToInstalledStateRecord
+      - TestWorkflowProgress_BoundToWorkflowTerminalState
+
+  - id: ui.dangerous_warning_must_remain_visible
+    title: Dangerous or destructive-operation warnings must remain visible across responsive layouts and skins
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Operator UIs often include warnings about destructive topology changes, quorum-loss risk,
+      data-loss risk, or irreversible operations. These warnings must not be hidden by:
+        - Responsive CSS breakpoints collapsing sections on mobile/narrow viewports
+        - Theme or skin changes that reduce visual contrast or recolor warning elements
+        - Tab panels or accordions that move warnings into collapsed sections
+        - Animation or transition effects that remove warnings from the DOM prematurely
+      If a user can reach an action button without seeing the associated warning, the invariant
+      is violated.
+    enforcement: |
+      Before editing layout, theme, or responsive breakpoint code near warning components,
+      verify that destructive-operation warnings remain in the DOM and visually prominent
+      at all tested viewport sizes. "Visually prominent" means distinct background/border
+      color, not just inline text.
+    forbidden_fixes:
+      - ui.fix.hide_warning_on_small_viewport
+      - ui.fix.place_critical_warning_in_collapsed_section
+    required_tests:
+      - TestDestructiveWarning_VisibleAtAllBreakpoints
+      - TestDestructiveWarning_NotHiddenByThemeChange
+
+  - id: ui.ai_text_must_not_invent_state
+    title: AI-generated UI text may decorate wording but must not invent system state
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Operator UIs may use AI-generated or AI-assisted text for explanations, summaries,
+      help copy, and error descriptions. This is acceptable when the AI text decorates or
+      rephrases a backend fact. It is not acceptable when the AI text:
+        - Invents a success, failure, or approval that the backend did not confirm
+        - Hides a blocked workflow reason behind humorous or vague text
+        - Requests, displays, or infers personal or sensitive data for fictional flows
+        - Presents a speculative state as if it were observed fact
+      The backend is always authoritative. AI text is presentation only.
+    enforcement: |
+      Any frontend code that calls an LLM API, uses a text-generation component, or
+      renders AI-drafted copy must be reviewed against this invariant. The review must
+      confirm that the text is bound to a concrete backend value and does not introduce
+      claims that the backend did not produce.
+    forbidden_fixes:
+      - ui.fix.ai_invents_state
+      - forbidden.ai_text_invents_state
+    required_tests:
+      - TestAIExplanation_DoesNotInvertBackendFact
+      - TestAIText_ShowsBlockedReason_NotGenericMessage
+
+  - id: ui.action_requires_permission_contract
+    title: User actions in the UI must declare and respect their required RBAC permission
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Every action button, form submit, or context-menu item that triggers a state mutation
+      (install, deinstall, upgrade, restart, wipe, configure) has a required RBAC permission.
+      That permission must be:
+        1. Declared in the component (as a prop, a hook, or a comment)
+        2. Checked before the action is enabled — if the permission is known ahead of time,
+           disable the button and explain why
+        3. Handled distinctly on denial — PERMISSION_DENIED must not look like a network error
+      Disabling an action after the user clicks it (post-submit denial) is worse than pre-disabling
+      it. Pre-disabling requires knowing the RBAC result early enough to render the button state.
+    enforcement: |
+      Before editing any action component, verify that it has a permission declaration and that
+      the action is disabled when the permission is denied. Check that the error path for
+      PERMISSION_DENIED renders a distinct message — not a generic retry or network error.
+    forbidden_fixes:
+      - ui.fix.enable_action_without_permission
+      - forbidden.ui_action_enabled_without_permission
+      - forbidden.permission_denied_as_network_error
+    required_tests:
+      - TestActionButton_Disabled_WhenPermissionDenied
+      - TestPermissionDenied_RenderedDistinctly_NotAsNetworkError
+    related_failure_modes:
+      - fm.industry.permission_denied_rendered_as_network_error
+
+  - id: ui.status_freshness_must_be_surfaced
+    title: UI status indicators must surface the freshness of their data source
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Operator UIs that display cluster health, node status, or service availability must
+      show when the displayed data was last observed. A status that was healthy two hours ago
+      is not proof of current health. Users must be able to distinguish:
+        - Live data (collected within the last polling interval)
+        - Recent data (collected within the last N minutes, within acceptable staleness)
+        - Stale data (older than the declared TTL — must be marked explicitly)
+      Stale data rendered as current misleads the operator into believing the system is
+      healthy when monitoring has failed or the collector is lagging.
+    enforcement: |
+      Any component that polls or subscribes to cluster status must display a freshness
+      indicator (timestamp, "as of N minutes ago", or a stale badge). If the data source
+      has not refreshed within the polling TTL, the component must show a visual stale
+      indicator — not the last-good value as if it were current.
+    forbidden_fixes:
+      - forbidden.unknown_as_healthy
+    required_tests:
+      - TestStatusIndicator_ShowsFreshnessTimestamp
+      - TestStatusIndicator_MarkedStale_WhenCollectorLags
+    related_failure_modes:
+      - fm.industry.stale_cache_served_as_live_state

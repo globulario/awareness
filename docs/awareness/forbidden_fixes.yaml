@@ -1810,3 +1810,124 @@ forbidden_fixes:
     Local/dev/hotfix artifacts may only be imported with explicit trust
     policy or operator approval via `globular pkg override`. They must
     never silently replace the receiving cluster's official desired state.
+
+# ── State authority forbidden fixes ──────────────────────────────────────────
+# Correspond to: state_authority_invariants.yaml, frontend_invariants.yaml,
+#                industry_failure_modes.yaml
+
+- id: forbidden.runtime_from_desired
+  summary: |
+    Infer runtime health or liveness from desired state, desired-release records,
+    or install-workflow completions instead of a live runtime probe.
+  related_invariants:
+    - state.runtime_not_desired
+    - runtime.desired_enabled_not_alive
+    - ui.visible_state_requires_authority
+  safe_alternative: |
+    Read runtime health from the runtime authority: systemd unit state,
+    gRPC health RPC, or a live socket probe. Desired state expresses intent;
+    it must never answer the question "is it running right now?"
+
+- id: forbidden.localhost_dns_bypass
+  summary: |
+    Replace a cluster DNS name, node IP, or VIP with localhost or 127.0.0.1
+    to work around a TLS, DNS, SAN, or routing failure.
+  related_invariants:
+    - network.no_loopback_escape_for_cluster_identity
+  safe_alternative: |
+    Fix the root cause: update the certificate SAN, correct the DNS record,
+    or resolve the routing misconfiguration. Switching to loopback hides
+    the problem, breaks multi-node correctness, and bypasses mTLS identity.
+    Listener bind addresses must use 0.0.0.0, not 127.0.0.1.
+
+- id: forbidden.unknown_as_healthy
+  summary: |
+    Render an unknown or unobserved state as healthy/green in status rollups,
+    badges, or CLI output.
+  related_invariants:
+    - state.runtime_not_desired
+    - ui.visible_state_requires_authority
+    - ui.status_freshness_must_be_surfaced
+  related_failure_modes:
+    - fm.industry.partial_failure_hidden_by_global_green
+  safe_alternative: |
+    Treat UNKNOWN as a distinct state — not as HEALTHY. Status aggregations
+    must propagate UNKNOWN upward to the summary level. Show "unknown as of T"
+    rather than defaulting to a passing status.
+
+- id: forbidden.optimistic_destructive_success
+  summary: |
+    Report success to the user for a destructive or irreversible operation
+    before backend or workflow confirmation is received.
+  related_invariants:
+    - workflow.success_requires_backend_confirmation
+  related_failure_modes:
+    - fm.industry.optimistic_success_for_irreversible_action
+  safe_alternative: |
+    Return an accepted receipt at dispatch time. Stream or poll workflow status
+    until a terminal state is reached. Report that terminal state to the user.
+    Destructive operations must additionally require operator confirmation
+    before dispatch.
+
+- id: forbidden.permission_denied_as_network_error
+  summary: |
+    Display a gRPC PERMISSION_DENIED error as a generic network error,
+    connection failure, or unknown error, causing the user to diagnose
+    connectivity instead of authorization.
+  related_invariants:
+    - ui.action_requires_permission_contract
+  related_failure_modes:
+    - fm.industry.permission_denied_rendered_as_network_error
+  safe_alternative: |
+    Map PERMISSION_DENIED distinctly from transient errors. Show a clear
+    "not authorized" message. Do not show a retry button for PERMISSION_DENIED.
+    Disable the action before submit when the RBAC result is known ahead of time.
+
+- id: forbidden.partial_snapshot_false_quorum_loss
+  summary: |
+    Fire a quorum-loss finding or emit a KNOWN_DOWN classification for a node
+    that is absent from an incomplete objectstore snapshot, treating absence
+    as evidence of failure rather than a collector gap.
+  related_invariants:
+    - objectstore.partial_snapshot_unknown_not_down
+  safe_alternative: |
+    Classify absent NodeRecord entries as UNKNOWN. Emit a DataIncomplete caveat
+    on the finding. Only classify a node as KNOWN_DOWN when its NodeRecord is
+    present in the snapshot and explicitly reports unhealthy or unreachable.
+
+- id: forbidden.vip_without_runtime_proof
+  summary: |
+    Assume a node holds the cluster VIP because it has the 'gateway' profile,
+    because keepalived is installed, or because desired topology includes it
+    as a gateway node — without reading the live VRRP state from etcd.
+  related_invariants:
+    - ops.vip_requires_observed_owner
+  safe_alternative: |
+    Identify the VIP holder by reading /globular/ingress/v1/status/{node_id}
+    and looking for VRRP MASTER state. A gateway profile or a keepalived
+    installation record is necessary but not sufficient — only live VRRP state
+    proves current VIP ownership.
+
+- id: forbidden.ui_action_enabled_without_permission
+  summary: |
+    Enable a destructive or state-mutating UI action button without first
+    checking the user's RBAC permission for that action.
+  related_invariants:
+    - ui.action_requires_permission_contract
+  safe_alternative: |
+    Call the RBAC permission check before rendering the action component.
+    Disable the button and display a "requires <permission>" tooltip when
+    the check returns denied. Pre-disabling is better than post-submit denial.
+
+- id: forbidden.ai_text_invents_state
+  summary: |
+    Use AI-generated or LLM-drafted text to describe a system state that the
+    backend did not confirm — including invented success, invented failures,
+    invented approvals, or speculation presented as observation.
+  related_invariants:
+    - ui.ai_text_must_not_invent_state
+  safe_alternative: |
+    AI-generated text must be bound to a concrete backend value. The text may
+    rephrase or explain the value, but it may not add, remove, or invert the
+    fact. If the backend returns a blocked reason, show the reason — not a
+    generic or humorous substitute.

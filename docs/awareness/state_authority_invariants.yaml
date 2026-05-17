@@ -1,0 +1,191 @@
+# State authority invariants
+#
+# These invariants encode the principle that each layer of system truth has a distinct
+# authority and must not be inferred from a different layer. They are derived from first
+# principles and are validated by Globular production incidents.
+#
+# Origin classes used below:
+#   principle       — deducible from first principles before any incident
+#   globular_incident — observed in production; very high confidence
+#
+# These invariants are intentionally project-agnostic. Any operator-grade distributed system
+# must respect them.
+
+invariants:
+
+  - id: state.runtime_not_desired
+    title: Runtime health must never be inferred from desired state
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Desired state expresses intent: what the operator wants the system to do.
+      Runtime state expresses observed reality: what is actually running and healthy.
+      The two are independent. A service may be desired but not installed. It may be
+      installed but not running. It may be running but unhealthy. Any code path that
+      reads desired state and draws a conclusion about runtime health is wrong.
+    enforcement: |
+      Code that renders health indicators, status badges, or availability signals
+      must read from the runtime authority (systemd, health-check RPC, live probe).
+      It must never read from desired state, desired release records, or install
+      workflow completions as a substitute for runtime evidence.
+    forbidden_fixes:
+      - forbidden.runtime_from_desired
+      - marking_available_from_local_success_only
+      - assume_installed_means_running
+    required_tests:
+      - TestRuntimeStatus_NotDerivedFromDesiredState
+      - TestDesiredEnabled_DoesNotImplyHealthy
+    related_failure_modes:
+      - runtime.desired_enabled_not_alive
+      - fm.industry.partial_failure_hidden_by_global_green
+
+  - id: state.installed_not_catalog
+    title: Installed state must never be inferred from repository catalog availability
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      The repository catalog records what packages exist and can be installed.
+      The installed-state record in etcd records what is actually installed on a node.
+      Catalog presence is a necessary but not sufficient condition for installation.
+      Any code path that concludes a service is installed because its artifact exists
+      in the catalog is wrong. The node-agent must write the installed-state record
+      after successful installation; the controller must read that record, not the catalog.
+    enforcement: |
+      Install status must be read from /globular/nodes/{node_id}/packages/{kind}/{name}
+      (installed-state in etcd). It must never be inferred from repository catalog
+      availability, BOM membership, or workflow dispatch alone.
+    forbidden_fixes:
+      - marking_available_from_local_success_only
+      - mark_release_available_from_local_success
+    required_tests:
+      - TestInstalledState_NotDerivedFromCatalog
+      - TestBOMMembership_DoesNotImplyInstalled
+
+  - id: workflow.success_requires_backend_confirmation
+    title: UI or CLI success must require backend/workflow confirmation
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      A command dispatch or button click is not proof that the requested operation
+      completed. Operations that mutate cluster state — installing packages, changing
+      topology, upgrading services, applying configuration — must go through a workflow.
+      The workflow must reach a terminal state (SUCCEEDED or FAILED). Success must not
+      be reported to the user until the workflow terminal state is observed or, for
+      async operations, a durable accepted receipt is confirmed.
+    enforcement: |
+      gRPC RPCs that trigger workflows must return an accepted status, not a success
+      status. Callers — CLI, frontend, MCP tools — must poll or stream workflow status
+      and report terminal state to the user. Early-return success after dispatch is
+      explicitly forbidden.
+    forbidden_fixes:
+      - forbidden.optimistic_destructive_success
+      - marking_available_from_local_success_only
+    required_tests:
+      - TestWorkflowDispatch_ReturnsAccepted_NotSuccess
+      - TestCLI_ReportsTerminalWorkflowState
+
+  - id: objectstore.partial_snapshot_unknown_not_down
+    title: Missing inventory in a partial objectstore snapshot must be treated as unknown, not known-down
+    severity: critical
+    status: active
+    # origin: { type: globular_incident, confidence: very_high }
+    summary: |
+      When the cluster-doctor or any diagnostic tool collects an objectstore health snapshot,
+      the collector may have incomplete data: not all node inventory records may be present.
+      A node absent from a partial snapshot means the collector did not receive that node's
+      record — it does not mean MinIO is down on that node. Treating absence as known-down
+      causes false quorum-loss findings, incorrect remediation proposals, and operator alarm
+      fatigue. The correct classification for an absent node record is UNKNOWN.
+    enforcement: |
+      Objectstore health rules must distinguish between:
+        PRESENT      — NodeRecord received and health confirmed
+        UNKNOWN      — NodeRecord absent from snapshot (collector gap, not proven down)
+        KNOWN_DOWN   — NodeRecord present and explicitly reports unhealthy/unreachable
+      Only KNOWN_DOWN nodes count toward quorum loss findings.
+      DataIncomplete snapshots must emit a caveat, not a quorum-loss finding.
+    forbidden_fixes:
+      - forbidden.partial_snapshot_false_quorum_loss
+    required_tests:
+      - TestObjectstoreQuorum_AbsentNodeIsUnknownNotDown
+      - TestObjectstoreQuorum_PartialSnapshot_EmitsCaveat
+      - TestObjectstoreQuorum_KnownDown_StillCountsForLoss
+    related_failure_modes:
+      - fm.globular.objectstore_partial_snapshot
+
+  - id: ops.vip_requires_observed_owner
+    title: VIP ownership must be proven from runtime evidence, not assumed from topology or package expectations
+    severity: high
+    status: active
+    # origin: { type: globular_incident, confidence: very_high }
+    summary: |
+      The cluster VIP (keepalived floating IP) is owned at runtime by exactly one node at any
+      moment, determined by VRRP negotiation. No configuration record, desired-state entry, or
+      package installation record proves that keepalived is active or that the VIP is held by
+      any specific node. Treating a node as VIP-holder without runtime evidence leads to wrong
+      routing, certificate SAN mismatches, and cascading failures when the VIP moves. The VIP
+      holder must be identified from etcd /globular/ingress/v1/status/{node_id} or from a live
+      VRRP probe — never from package-installed records or node profiles alone.
+    enforcement: |
+      Any code that must know the current VIP holder must read
+      /globular/ingress/v1/status/{node_id} and look for the MASTER state.
+      Never assume a node holds the VIP because its profile includes 'gateway'
+      or because globular-keepalived is installed on it.
+    forbidden_fixes:
+      - forbidden.vip_without_runtime_proof
+    required_tests:
+      - TestVIPHolder_DerivedFromRuntimeStatus_NotProfile
+      - TestVIPHolder_ReflectsActualMaster
+    related_failure_modes:
+      - fm.globular.vip_transition_cascade
+
+  - id: network.no_loopback_escape_for_cluster_identity
+    title: Cluster identity, TLS SAN validation, and service routing must not be bypassed with localhost or 127.0.0.1
+    severity: critical
+    status: active
+    # origin: { type: globular_incident, confidence: very_high }
+    summary: |
+      Replacing a cluster DNS name, node IP, or VIP with localhost or 127.0.0.1 to work
+      around a TLS, DNS, SAN, or routing failure hides the root cause without fixing it.
+      It creates a single-node illusion that breaks when the client or the target service is
+      on a different physical node. It also bypasses Envoy/gateway routing, RBAC enforcement,
+      and mTLS identity — making the cluster less secure and less observable.
+      The only acceptable use of localhost is for etcdctl pointing to a local etcd instance
+      and for the local DNS resolver entry in resolv.conf.
+    enforcement: |
+      All inter-service gRPC calls must use FQDN endpoints resolved from etcd.
+      All listener bind addresses must use 0.0.0.0, not 127.0.0.1.
+      If a TLS or SAN error occurs, fix the certificate or the DNS record —
+      never switch to loopback as a workaround.
+    forbidden_fixes:
+      - forbidden.localhost_dns_bypass
+    required_tests:
+      - TestInterServiceCall_UsesResolvedFQDN_NotLoopback
+      - TestListenerBind_Uses0000_NotLoopback
+
+  - id: runtime.desired_enabled_not_alive
+    title: Desired-enabled state must not be used as proof that a service is alive
+    severity: critical
+    status: active
+    # origin: { type: globular_incident, confidence: very_high }
+    summary: |
+      A DesiredService record with enabled=true means the operator wants the service to run.
+      It says nothing about whether the service process is currently alive, healthy, or
+      responsive. Multiple production incidents recorded services stuck in INSTALLING or
+      DEGRADED while their desired state showed enabled. Probing desired state to answer
+      "is it running?" returns a stale intent, not a live observation.
+    enforcement: |
+      Liveness and health checks must probe the runtime layer: systemd unit state,
+      the gRPC health RPC, or a live socket connect. Desired state records may be
+      read to understand intent; they must never substitute for a live probe when
+      the question is about current availability.
+    forbidden_fixes:
+      - forbidden.runtime_from_desired
+      - assume_installed_means_running
+      - skip_systemd_health_check_if_installed
+    required_tests:
+      - TestServiceLiveness_UsesRuntimeProbe_NotDesiredState
+    related_failure_modes:
+      - fm.industry.partial_failure_hidden_by_global_green
