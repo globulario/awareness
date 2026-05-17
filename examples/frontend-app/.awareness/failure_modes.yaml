@@ -1,0 +1,174 @@
+failure_modes:
+  - id: fm.ui.wrong_state_authority
+    title: UI derives visible status from the wrong authority
+    severity: critical
+    source: frontend-awareness
+    summary: A visible UI status is computed from desired/catalog/local state instead of the authority that owns the claim.
+    description: |
+      This creates an operator lie. The interface looks healthy, installed, successful, or
+      allowed even though the authoritative backend state says otherwise or is unknown.
+    symptoms:
+      - green badge when runtime is unknown
+      - installed badge from catalog availability
+      - success toast immediately after click
+      - stale cache shown as live state
+    root_cause: The component mixes desired, installed, runtime, catalog, workflow, and local optimistic state without explicit authority boundaries.
+    correct_approach:
+      - identify the claim being displayed
+      - bind the claim to the correct backend authority
+      - show unknown/degraded when authority is unavailable
+      - add tests for authority absence
+    known_bad_fixes:
+      - derive runtime from desired state
+      - derive installed from catalog
+      - set success from local click state
+      - hide unknown state as loading forever
+    forbidden_fixes:
+      - ui.fix.derive_runtime_from_desired
+      - ui.fix.optimistic_success_badge
+    regression_tests:
+      - runtime unknown does not show healthy
+      - desired enabled does not imply runtime healthy
+    related_invariants:
+      - ui.status.runtime_badge_authority
+    related_services:
+      - frontend
+    required_tests:
+      - runtime badge authority test
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: fm.ui.unauthorized_action_enabled
+    title: UI enables action without permission authority
+    severity: critical
+    source: frontend-awareness
+    summary: A mutating button or form submit is enabled before RBAC confirms the user may perform the action.
+    description: |
+      The action may still fail server-side, but the screen has already lied to the operator
+      by presenting the action as valid.
+    symptoms:
+      - install/delete/approve button enabled for unauthorized user
+      - permission denied appears only after submit
+      - frontend retries permission denied
+    root_cause: The component treats authentication, selection, or local role hints as permission authority.
+    correct_approach:
+      - check RBAC authority before enabling mutating actions
+      - show disabled reason or permission warning
+      - preserve backend permission denied message
+    known_bad_fixes:
+      - hide permission errors
+      - retry permission denied automatically
+      - infer permission from logged-in status
+    forbidden_fixes:
+      - ui.fix.enable_action_without_permission
+      - ui.fix.retry_permission_denied
+    regression_tests:
+      - mutating button disabled without permission
+      - backend permission denial shown
+    related_invariants:
+      - ui.action.rbac_gate_required
+    related_services:
+      - frontend
+    required_tests:
+      - RBAC gate test
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: fm.ui.warning_hidden_by_layout
+    title: Critical warning hidden by layout, breakpoint, or skin
+    severity: high
+    source: frontend-awareness
+    summary: A visual change hides a warning, degraded reason, destructive risk, or blocked reason.
+    description: |
+      Layout bugs become operator-safety bugs when they remove visibility of risk.
+    symptoms:
+      - warning visible on desktop but absent on mobile
+      - modal overlay hides destructive risk
+      - theme contrast makes warning unreadable
+      - table overflow clips degraded reason
+    root_cause: Visual behavior was not treated as a contract.
+    correct_approach:
+      - define visual contracts for critical states
+      - add screenshots or component tests for desktop and mobile
+      - ensure themes preserve meaning
+    known_bad_fixes:
+      - move warning below collapsed content without indicator
+      - hide long backend reason to make card prettier
+      - rely on color only
+    forbidden_fixes:
+      - ui.fix.theme_hides_warning
+      - ui.fix.mobile_layout_drops_warning
+    regression_tests:
+      - critical warning visible at mobile breakpoint
+      - degraded reason visible after theme change
+    related_invariants:
+      - ui.visual.critical_warning_visible
+    related_services:
+      - frontend
+    required_tests:
+      - visual warning contract test
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: fm.ui.failure_reason_hidden
+    title: Workflow or backend failure reason replaced by generic message
+    severity: high
+    source: frontend-awareness
+    summary: A structured backend failure reason is discarded and replaced with a generic frontend error.
+    description: |
+      When a workflow fails, a doctor finding exists, or an RBAC denial is returned,
+      the operator needs the specific reason to act. Generic messages remove that agency.
+    symptoms:
+      - "Something went wrong" instead of workflow failure reason
+      - blocked_reason field ignored
+      - error.details swallowed in catch block
+    root_cause: Error handling catch blocks overwrite structured backend errors with frontend strings.
+    correct_approach:
+      - preserve backend error reason in state
+      - display structured failure reason to operator
+      - never replace structured error with generic string when detail exists
+    forbidden_fixes:
+      - ui.fix.generic_error_hides_backend_reason
+    related_invariants:
+      - ui.workflow.failure_reason_visible
+    related_services:
+      - frontend
+    required_tests:
+      - workflow failure reason displayed
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: fm.ui.ai_text_unbound_from_truth
+    title: AI-generated text in UI invents or fabricates system state
+    severity: high
+    source: frontend-awareness
+    summary: AI-generated prose claims the system is healthy, successful, or complete without binding to real backend state.
+    description: |
+      AI explanations, summaries, or workflow narrations may decorate real state,
+      but must never fabricate status, success, failure, permissions, defer_until, or
+      required actions that are not present in backend data.
+    symptoms:
+      - AI says approved when workflow is pending
+      - AI says complete when backend reports failed
+      - AI invents a required action not present in doctor findings
+    root_cause: AI text generation is not constrained by a backend-truth binding contract.
+    forbidden_fixes:
+      - ui.fix.ai_invents_state
+    related_invariants:
+      - ui.ai_text.must_bind_to_backend_truth
+    related_services:
+      - frontend
+    required_tests:
+      - AI explanation bound to real workflow status
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90

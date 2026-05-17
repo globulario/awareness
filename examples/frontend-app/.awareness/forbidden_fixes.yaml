@@ -1,0 +1,68 @@
+forbidden_fixes:
+  - id: ui.fix.derive_runtime_from_desired
+    summary: Do not derive runtime health from desired state.
+    description: Runtime health must come from runtime authority. Desired enabled only means the system wants the service to run.
+    forbidden_pattern: |
+      badge = desired.enabled ? "healthy" : "stopped"
+      status = desiredState ? "green" : "red"
+    applies_when: UI displays runtime, health, alive, ready, available, degraded, or up/down state.
+
+  - id: ui.fix.optimistic_success_badge
+    summary: Do not mark an operation successful from click/local state alone.
+    description: Success must follow backend confirmation, workflow receipt, or authoritative state refresh.
+    forbidden_pattern: |
+      setInstalled(true)
+      setStatus("success")
+      toast.success("Installed") before backend confirmation
+    applies_when: UI triggers install, uninstall, deploy, approve, topology apply, permission change, or workflow action.
+
+  - id: ui.fix.enable_action_without_permission
+    summary: Do not enable mutating action without RBAC authority.
+    description: Authentication is not permission. Local role hints are not permission. RBAC authority must gate the action.
+    forbidden_pattern: |
+      disabled={!isLoggedIn}
+      canInstall = !!user
+      canDelete = role === "admin" without backend permission authority
+    applies_when: Button or form mutates desired state, starts workflows, updates RBAC, deletes data, deploys packages, or changes topology.
+
+  - id: ui.fix.retry_permission_denied
+    summary: Do not retry permission denied automatically.
+    description: Permission denied is an authority decision, not a transient network failure.
+    forbidden_pattern: |
+      if error.status == 403 then retry()
+      retry all errors including permission denied
+    applies_when: Backend returns permission denied, unauthenticated, forbidden, or RBAC denial.
+
+  - id: ui.fix.generic_error_hides_backend_reason
+    summary: Do not replace structured backend failure with a generic frontend error.
+    description: Workflow, doctor, runtime, and RBAC reasons must remain visible enough for the operator to act.
+    forbidden_pattern: |
+      catch { setError("Something went wrong") }
+      hide error.details
+      ignore blocked_reason
+    applies_when: Backend returns workflow failure, doctor finding, degraded reason, manual-action-required reason, or permission denial.
+
+  - id: ui.fix.theme_hides_warning
+    summary: Do not let theme/skin changes remove or weaken critical warnings.
+    description: Skins may change mood, not meaning.
+    forbidden_pattern: |
+      theme hides warning panel
+      warning only shown in serious skin
+      warning color has insufficient contrast
+    applies_when: Theme, skin, branding, responsive layout, or visual refactor touches warning components.
+
+  - id: ui.fix.mobile_layout_drops_warning
+    summary: Do not drop critical warnings at mobile breakpoint.
+    description: Mobile views must preserve destructive risk, blocked reason, degraded reason, and permission state.
+    forbidden_pattern: |
+      hidden md:block on critical warning
+      mobile card omits warning slot
+    applies_when: Responsive changes affect status cards, topology pages, workflow panels, modals, or admin actions.
+
+  - id: ui.fix.ai_invents_state
+    summary: Do not let AI-generated text invent state.
+    description: AI may decorate wording, but every system-state claim must bind to backend truth.
+    forbidden_pattern: |
+      AI says approved/successful/healthy/complete without backend state
+      AI fabricates required action or defer_until
+    applies_when: UI uses AI explanations, generated summaries, assistant panels, workflow clerks, or humorous bureaucratic narration.

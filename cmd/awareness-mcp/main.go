@@ -1014,6 +1014,114 @@ func registerTools(srv *mcpServer) {
 			"summary": report.String(),
 		}, nil
 	})
+
+	// ── frontend_trace_component ───────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "frontend_trace_component",
+		Description: "Return everything awareness knows about a frontend component: graph nodes, backend calls, state atoms, permission checks, and matched invariants/failure modes/forbidden fixes. Works without a compiled graph — falls back to YAML knowledge.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"component": {
+					Type:        "string",
+					Description: "Component name to look up (e.g. 'ServiceStatusCard', 'InstallButton').",
+				},
+				"include_contracts": {
+					Type:        "boolean",
+					Description: "If true, include matched invariants, failure modes, and forbidden fixes. Default true.",
+					Default:     true,
+				},
+			},
+			Required: []string{"component"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		component, _ := args["component"].(string)
+		if strings.TrimSpace(component) == "" {
+			return nil, fmt.Errorf("component is required")
+		}
+		includeContracts := true
+		if v, ok := args["include_contracts"].(bool); ok {
+			includeContracts = v
+		}
+		return frontendTraceComponent(prof, component, includeContracts), nil
+	})
+
+	// ── frontend_explain_screen ────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "frontend_explain_screen",
+		Description: "Explain what a route/screen is supposed to display and what it must not lie about. Returns truth claims, state authorities, must-show items, forbidden behaviors, and matched invariants. Call before editing a page component.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"route": {
+					Type:        "string",
+					Description: "Route path to explain (e.g. '/admin/objectstore/topology').",
+				},
+			},
+			Required: []string{"route"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		route, _ := args["route"].(string)
+		if strings.TrimSpace(route) == "" {
+			return nil, fmt.Errorf("route is required")
+		}
+		return frontendExplainScreen(prof, route), nil
+	})
+
+	// ── frontend_plan_feature ──────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "frontend_plan_feature",
+		Description: "Given a feature intent, generate proposed awareness contracts (screen, component, journey) before any code is written. Returns contract drafts, authority questions, required tests, and applicable forbidden patterns. Does not write files.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"intent": {
+					Type:        "string",
+					Description: "Feature intent description (e.g. 'Add package install screen with workflow progress and RBAC-gated install button').",
+				},
+			},
+			Required: []string{"intent"},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		intent, _ := args["intent"].(string)
+		if strings.TrimSpace(intent) == "" {
+			return nil, fmt.Errorf("intent is required")
+		}
+		return frontendPlanFeature(prof, intent), nil
+	})
+
+	// ── frontend_verify_change ─────────────────────────────────────────────────
+
+	srv.register(toolDef{
+		Name:        "frontend_verify_change",
+		Description: "Check changed frontend files against frontend awareness before committing. Returns matched invariants, failure modes, forbidden fixes, required tests, and an allow|warn|block verdict. Call after editing TypeScript/React files.",
+		InputSchema: inputSchema{
+			Type: "object",
+			Properties: map[string]propSchema{
+				"files": {
+					Type:        "string",
+					Description: "Comma-separated changed file paths (e.g. 'src/pages/ObjectStoreTopologyPage.tsx,src/components/StatusBadge.tsx').",
+				},
+				"task": {
+					Type:        "string",
+					Description: "Task description for context matching.",
+				},
+			},
+		},
+	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		filesStr, _ := args["files"].(string)
+		task, _ := args["task"].(string)
+		var files []string
+		for _, f := range strings.Split(filesStr, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				files = append(files, f)
+			}
+		}
+		return frontendVerifyChange(prof, files, task), nil
+	})
 }
 
 func mcpComputeVerdict(failureModes, forbiddenAssumptions, questions []string) (verdict, confidence string) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/globulario/awareness/knowledge"
+	"github.com/globulario/awareness/scan/tsast"
 )
 
 // CurrentGraphSchemaVersion is the schema version written into static GraphFile exports.
@@ -52,7 +53,8 @@ type BuildInput struct {
 
 // BuildOptions controls optional behaviour of Build.
 type BuildOptions struct {
-	IncludeSourceFiles bool
+	IncludeSourceFiles bool // adds .go source_file nodes
+	IncludeTypeScript  bool // adds TypeScript source_file nodes + frontend_* nodes and edges
 }
 
 // BuildResult holds the output of a static graph build.
@@ -124,6 +126,15 @@ func Build(input BuildInput, opts BuildOptions) (*BuildResult, error) {
 		}
 	}
 
+	if opts.IncludeTypeScript {
+		for _, root := range input.SourceRoots {
+			count, err := addFrontendNodes(gf, root)
+			if err == nil {
+				sourceFileCount += count
+			}
+		}
+	}
+
 	sort.Slice(gf.Nodes, func(i, j int) bool {
 		return gf.Nodes[i].ID < gf.Nodes[j].ID
 	})
@@ -137,6 +148,133 @@ func Build(input BuildInput, opts BuildOptions) (*BuildResult, error) {
 		ForbiddenFixCount: forbiddenFixCount,
 		SourceFileCount:   sourceFileCount,
 	}, nil
+}
+
+// addFrontendNodes scans root for TypeScript/React files and emits:
+//   - one source_file node per file
+//   - one frontend_* node per discovered construct
+//   - edges connecting files to their constructs
+func addFrontendNodes(gf *GraphFile, root string) (int, error) {
+	findings, err := tsast.ScanDir(root)
+	if err != nil {
+		return 0, err
+	}
+
+	// Track emitted source_file and construct nodes to avoid duplicates.
+	seenFiles := map[string]bool{}
+	seenNodes := map[string]bool{}
+	fileCount := 0
+
+	for _, f := range findings {
+		rel, relErr := filepath.Rel(root, f.File)
+		if relErr != nil {
+			rel = f.File
+		}
+		rel = filepath.ToSlash(rel)
+
+		// Emit source_file node once per file.
+		fileNodeID := "ts:" + rel
+		if !seenFiles[fileNodeID] {
+			seenFiles[fileNodeID] = true
+			gf.Nodes = append(gf.Nodes, StaticNode{
+				ID:   fileNodeID,
+				Kind: "source_file",
+				Properties: map[string]string{
+					"language": "typescript",
+					"path":     rel,
+				},
+			})
+			fileCount++
+		}
+
+		// Map tsast kind to graph node kind.
+		nodeKind := frontendNodeKind(f.Kind)
+		if nodeKind == "" {
+			continue
+		}
+
+		// Construct a stable node ID from file + kind + name.
+		nodeID := nodeKind + ":" + rel
+		if f.Name != "" {
+			nodeID = nodeKind + ":" + f.Name + "@" + rel
+		}
+
+		if !seenNodes[nodeID] {
+			seenNodes[nodeID] = true
+			props := map[string]string{"file": rel}
+			if f.Name != "" {
+				props["name"] = f.Name
+			}
+			gf.Nodes = append(gf.Nodes, StaticNode{
+				ID:         nodeID,
+				Kind:       nodeKind,
+				Label:      f.Name,
+				Properties: props,
+			})
+
+			// Edge: file → construct.
+			edgeKind := fileToConstructEdge(nodeKind)
+			if edgeKind != "" {
+				gf.Edges = append(gf.Edges, StaticEdge{
+					From: fileNodeID,
+					To:   nodeID,
+					Kind: edgeKind,
+				})
+			}
+		}
+	}
+
+	return fileCount, nil
+}
+
+// frontendNodeKind maps a tsast kind string to its graph node kind.
+func frontendNodeKind(tsKind string) string {
+	switch tsKind {
+	case tsast.KindComponent:
+		return "frontend_component"
+	case tsast.KindRoute:
+		return "frontend_route"
+	case tsast.KindBackendCall:
+		return "frontend_backend_call"
+	case tsast.KindStateAtom:
+		return "frontend_state_atom"
+	case tsast.KindHook:
+		return "frontend_hook"
+	case tsast.KindPermissionCheck:
+		return "frontend_permission_check"
+	case tsast.KindTest:
+		return "frontend_test"
+	case tsast.KindStory:
+		return "frontend_story"
+	case tsast.KindLayoutSignal:
+		return "frontend_layout_signal"
+	default:
+		return ""
+	}
+}
+
+// fileToConstructEdge returns the edge kind for a file→construct relationship.
+func fileToConstructEdge(nodeKind string) string {
+	switch nodeKind {
+	case "frontend_component":
+		return "file_defines_component"
+	case "frontend_route":
+		return "file_defines_route"
+	case "frontend_backend_call":
+		return "file_contains_backend_call"
+	case "frontend_state_atom":
+		return "file_contains_state_atom"
+	case "frontend_hook":
+		return "file_defines_hook"
+	case "frontend_permission_check":
+		return "file_contains_permission_check"
+	case "frontend_test":
+		return "file_is_test"
+	case "frontend_story":
+		return "file_is_story"
+	default:
+		return ""
+	}
 }
 
 func addSourceFileNodes(gf *GraphFile, root string) (int, error) {

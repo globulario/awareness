@@ -1,0 +1,164 @@
+invariants:
+  - id: ui.status.runtime_badge_authority
+    title: Runtime badges must use runtime authority
+    severity: critical
+    status: active
+    summary: Runtime health badges must be derived from runtime health, not desired state, catalog state, or click state.
+    description: |
+      A green runtime badge is an operator-truth claim. It may only be shown when runtime
+      authority reports healthy. Desired state, installed state, repository catalog entries,
+      or optimistic UI state must not be used as runtime truth.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.derive_runtime_from_desired
+      - ui.fix.optimistic_success_badge
+    related_failure_modes:
+      - fm.ui.wrong_state_authority
+    required_tests:
+      - runtime badge shows unknown when runtime authority is missing
+      - runtime badge does not turn green from desired.enabled alone
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.status_authority
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.action.rbac_gate_required
+    title: Mutating UI actions must be RBAC-gated
+    severity: critical
+    status: active
+    summary: Buttons that mutate desired state or trigger workflows must check permission before enabling.
+    description: |
+      Mutating actions must be visibly disabled or blocked when the user lacks permission.
+      Permission denied must not be retried automatically and must not be hidden behind a
+      generic error.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.enable_action_without_permission
+      - ui.fix.retry_permission_denied
+    related_failure_modes:
+      - fm.ui.unauthorized_action_enabled
+    required_tests:
+      - install button disabled without RBAC permission
+      - permission denied displays backend reason
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.rbac_actions
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.workflow.failure_reason_visible
+    title: Workflow failure reasons must remain visible
+    severity: high
+    status: active
+    summary: Workflow failure, blocked, degraded, and manual-action-required reasons must be shown to the operator.
+    description: |
+      The UI may simplify wording, but it must not erase the backend reason.
+      Generic "Something went wrong" messages are forbidden when structured workflow or
+      doctor findings exist.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.generic_error_hides_backend_reason
+    related_failure_modes:
+      - fm.ui.failure_reason_hidden
+    required_tests:
+      - workflow failure panel shows backend reason
+      - blocked workflow reason remains visible on mobile
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.workflow_failure_visibility
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.visual.critical_warning_visible
+    title: Critical warnings must survive layout and theme changes
+    severity: high
+    status: active
+    summary: Layout, responsive behavior, and skins must not hide critical warnings.
+    description: |
+      A visual refactor is unsafe if it hides destructive-risk, degraded, blocked, permission,
+      or manual-action-required warnings. Skins may change presentation, not meaning.
+    files:
+      - src/**/*.tsx
+      - src/**/*.css
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.theme_hides_warning
+      - ui.fix.mobile_layout_drops_warning
+    related_failure_modes:
+      - fm.ui.warning_hidden_by_layout
+    required_tests:
+      - destructive warning visible on desktop
+      - destructive warning visible on mobile
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.visual_contract
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.ai_text.must_bind_to_backend_truth
+    title: AI-generated UI text must not invent state
+    severity: high
+    status: active
+    summary: AI-generated explanations may decorate, but must bind to real backend status, action, defer-until, or failure data.
+    description: |
+      AI text may be humorous, ceremonial, or explanatory, but it must not invent success,
+      failure, permission, workflow state, or required action. Every claim about system
+      state must be traceable to backend data or a declared derivation rule.
+    files:
+      - src/**/*.ts
+      - src/**/*.tsx
+      - apps/**/*.ts
+      - apps/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.ai_invents_state
+    related_failure_modes:
+      - fm.ui.ai_text_unbound_from_truth
+    required_tests:
+      - AI explanation includes real workflow status
+      - AI explanation does not produce success when workflow is failed
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.ai_explanation_contract
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
