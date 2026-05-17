@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/globulario/awareness/fsutil"
+
 )
 
 const (
@@ -187,13 +187,23 @@ func (c *Collector) collectPKI() PKIObservation {
 	}
 }
 
-// observeFile delegates to fsutil.ObserveFile — the canonical primitive
-// for the exists-vs-readable split. The conflation of these two states
-// into a single bool was the original composed-path failure in this
-// collector; the shared primitive consolidates that fix across mcp
-// runtime checks and any future caller. See composed-path failure log.
+// observeFile checks whether a path exists on disk and is readable by the
+// current process. These are two independent states — a file can exist but
+// be unreadable (wrong permissions/owner). Inlined here to avoid a
+// dependency on the services-module fsutil package.
 func observeFile(path string) (exists, readable bool) {
-	return fsutil.ObserveFile(path)
+	if path == "" {
+		return false, false
+	}
+	if _, err := os.Stat(path); err == nil {
+		exists = true
+	}
+	f, err := os.Open(path)
+	if err == nil {
+		readable = true
+		f.Close()
+	}
+	return
 }
 
 // readScyllaConfig parses key fields from /etc/scylla/scylla.yaml without a YAML library.

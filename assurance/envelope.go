@@ -9,6 +9,93 @@ package assurance
 
 import "time"
 
+// ─── Staleness types (lean; no graph dependency) ────────────────────────────
+
+// AlarmSeverity ranks staleness signals so callers can decide whether to gate.
+type AlarmSeverity string
+
+const (
+	AlarmInfo     AlarmSeverity = "info"
+	AlarmWarn     AlarmSeverity = "warn"
+	AlarmCritical AlarmSeverity = "critical"
+)
+
+// Alarm is a single staleness finding.
+type Alarm struct {
+	ID       string        `json:"id"`
+	Severity AlarmSeverity `json:"severity"`
+	Message  string        `json:"message"`
+	Subject  string        `json:"subject,omitempty"`
+}
+
+// Staleness is the combined freshness report for graph + bundle + sources.
+type Staleness struct {
+	GeneratedAtUnix      int64    `json:"generated_at_unix"`
+	GraphBuiltAtUnix     int64    `json:"graph_built_at_unix,omitempty"`
+	GraphAgeSeconds      float64  `json:"graph_age_seconds,omitempty"`
+	GraphStale           bool     `json:"graph_stale"`
+	GraphStaleReason     string   `json:"graph_stale_reason,omitempty"`
+	KnowledgeSourceHash  string   `json:"knowledge_source_hash,omitempty"`
+	BundlePresent        bool     `json:"bundle_present"`
+	BundleBuiltAtUnix    int64    `json:"bundle_built_at_unix,omitempty"`
+	BundleAgeSeconds     float64  `json:"bundle_age_seconds,omitempty"`
+	BundleVersion        string   `json:"bundle_version,omitempty"`
+	BundleBuildID        string   `json:"bundle_build_id,omitempty"`
+	// UnknownRoleYAMLCount: YAML files the system cannot classify (neither
+	// graph-contributing nor explicitly known config). Triggers stale_unknown.
+	UnknownRoleYAMLCount int     `json:"unknown_role_yaml_count,omitempty"`
+	// UntrackedYAMLCount: count of YAML files that are not in the canonical 6-file list.
+	// Does NOT cap trust on its own — only UnknownRoleYAMLCount does.
+	UntrackedYAMLCount int        `json:"untracked_yaml_count,omitempty"`
+	// ConfigYAMLCount: count of YAML files explicitly classified as config-only
+	// (incidents, proposals, knowledge/*). Safe to ignore for trust gating.
+	ConfigYAMLCount      int      `json:"config_yaml_count,omitempty"`
+	Alarms               []Alarm  `json:"alarms,omitempty"`
+}
+
+// ManifestInfo is the subset of bundle manifest fields needed by staleness checks.
+type ManifestInfo struct {
+	Version   string    `json:"version"`
+	BuildID   string    `json:"build_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ─── Coverage types (lean; no graph dependency) ──────────────────────────────
+
+// CoverageLevel classifies how well a single failure_mode is covered.
+type CoverageLevel string
+
+const (
+	// CoverageWellCovered: mitigation + test + detector all present.
+	CoverageWellCovered CoverageLevel = "well_covered"
+	// CoveragePartial: 1 or 2 of the three legs are present.
+	CoveragePartial CoverageLevel = "partial"
+	// CoverageTheoretical: documented but no enforcement.
+	CoverageTheoretical CoverageLevel = "theoretical"
+	// CoverageOrphan: zero inbound edges of any meaningful kind.
+	CoverageOrphan CoverageLevel = "orphan"
+)
+
+// FailureModeCoverage describes the coverage tuple for a single failure_mode.
+type FailureModeCoverage struct {
+	ID              string        `json:"id"`
+	Title           string        `json:"title"`
+	Severity        string        `json:"severity,omitempty"`
+	Mitigations     int           `json:"mitigations"`
+	Detectors       int           `json:"detectors"`
+	ActiveDetectors int           `json:"active_detectors"`
+	WiredDetectors  int           `json:"wired_detectors"`
+	Tests           int           `json:"tests"`
+	LearningEntries int           `json:"learning_entries"`
+	DecisionPaths   int           `json:"decision_paths"`
+	// Closure-loop provenance: deterministic (smallest id / name).
+	LearnedFromIncident string        `json:"learned_from_incident,omitempty"`
+	FirstVerifyingTest  string        `json:"first_verifying_test,omitempty"`
+	Level               CoverageLevel `json:"level"`
+	State               string        `json:"coverage_state,omitempty"`
+	Reasons             []string      `json:"reasons,omitempty"`
+}
+
 // FreshnessStatus is the single-value freshness verdict that pairs with the
 // detailed Staleness report. The Staleness report says *what* is stale; the
 // FreshnessStatus says how the consumer should treat the awareness output as

@@ -1,14 +1,93 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// ─── Minimal domain types used by both the Adapter interface and BridgeSnapshotter ───
+
+// DoctorFindingCompat is the subset of DoctorFinding fields needed by
+// the standalone preflight package. Concrete adapter implementations
+// (in the services module) must populate these fields.
+type DoctorFindingCompat struct {
+	FindingID  string
+	Severity   string
+	Title      string
+	Suppressed bool
+}
+
+// ServiceStatusCompat is the subset of ServiceStatus fields needed by
+// the standalone preflight package.
+type ServiceStatusCompat struct {
+	ServiceID string
+	NodeID    string
+	State     string
+}
+
+// WorkflowReceiptCompat is the subset of WorkflowReceipt fields needed by
+// the standalone preflight package.
+type WorkflowReceiptCompat struct {
+	WorkflowType string
+	Status       string
+	ErrorMsg     string
+}
+
+// StateDeltaCompat is the subset of StateDelta fields needed by
+// the standalone preflight package.
+type StateDeltaCompat struct {
+	ServiceID        string
+	DeltaType        string
+	DesiredVersion   string
+	InstalledVersion string
+}
+
+// RepositoryStatusCompat is the subset of RepositoryStatus fields needed by
+// the standalone Adapter interface.
+type RepositoryStatusCompat struct {
+	Mode      string
+	NodeID    string
+	Reachable bool
+	LastError string
+}
+
+// ─── BridgeSnapshotter ────────────────────────────────────────────────────────
+
+// BridgeSnapshot is a minimal runtime snapshot returned by BridgeSnapshotter.
+// It contains only the fields that the standalone preflight package needs.
+// The concrete RuntimeBridge in the services module populates these fields
+// from its full RuntimeSnapshot.
+type BridgeSnapshot struct {
+	CapturedAt          time.Time
+	MatchedInvariants   []string
+	MatchedFailureModes []string
+	Warnings            []string
+	DoctorFindings      []DoctorFindingCompat
+	ServiceStatuses     []ServiceStatusCompat
+	WorkflowReceipts    []WorkflowReceiptCompat
+	StateDeltas         []StateDeltaCompat
+	RepositoryStatuses  []RepositoryStatusCompat
+}
+
+// BridgeSnapshotter is the interface that a RuntimeBridge must implement for
+// use with the standalone preflight package. The concrete type lives in the
+// services module (services/golang/awareness/runtime.RuntimeBridge).
+//
+// The graph argument is passed as interface{} to avoid importing the graph
+// package here; callers must type-assert to *graph.Graph.
+type BridgeSnapshotter interface {
+	BridgeSnapshot(ctx context.Context, since time.Duration, g interface{}) (*BridgeSnapshot, error)
+}
+
+// ─── Adapter interface ────────────────────────────────────────────────────────
 
 // RuntimeSignals is the adapter-agnostic signal envelope returned by
 // Adapter.CollectSignals. Fields are populated only when the adapter is
 // enabled and sources are reachable; NullAdapter always returns a zero value.
 type RuntimeSignals struct {
-	DoctorFindings   []DoctorFinding
-	ServiceStatuses  []ServiceStatus
-	RepositoryStatus []RepositoryStatus
+	DoctorFindings   []DoctorFindingCompat
+	ServiceStatuses  []ServiceStatusCompat
+	RepositoryStatus []RepositoryStatusCompat
 }
 
 // Adapter is the lightweight standalone runtime interface used by the
@@ -62,4 +141,15 @@ func (NullAdapter) CollectFacts(_ context.Context, _ interface{}) ([]interface{}
 // and returns an error so callers can log a warning.
 func New(adapterName string) (Adapter, error) {
 	return NullAdapter{}, nil
+}
+
+// ─── NullBridgeSnapshotter ────────────────────────────────────────────────────
+
+// NullBridgeSnapshotter is the default BridgeSnapshotter for use when no
+// live cluster is available. It satisfies the interface with an empty,
+// non-error result.
+type NullBridgeSnapshotter struct{}
+
+func (NullBridgeSnapshotter) BridgeSnapshot(_ context.Context, _ time.Duration, _ interface{}) (*BridgeSnapshot, error) {
+	return &BridgeSnapshot{CapturedAt: time.Now()}, nil
 }

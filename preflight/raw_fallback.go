@@ -75,44 +75,6 @@ func RawKnowledgeFallback(task string, files []string, docsDir string) []RawKnow
 	return out
 }
 
-func mergeRawKnowledgeMatches(r *Report, matches []RawKnowledgeMatch) *Report {
-	for _, m := range matches {
-		if m.ID == "" || m.Score < 2 {
-			continue
-		}
-		switch m.Kind {
-		case "invariant":
-			r.Invariants = append(r.Invariants, m.ID)
-		case "failure_mode":
-			r.FailureModes = append(r.FailureModes, m.ID)
-		case "forbidden_fix":
-			r.ForbiddenFixes = append(r.ForbiddenFixes, m.ID)
-		case "decision":
-			r.MatchedDecisions = append(r.MatchedDecisions, m.ID)
-		case "forbidden_assumption":
-			r.MatchedForbiddenAssumptions = append(r.MatchedForbiddenAssumptions, m.ID)
-		case "required_test":
-			r.RequiredTests = append(r.RequiredTests, m.ID)
-		case "authority_rule":
-			r.MatchedAuthorityRules = append(r.MatchedAuthorityRules, m.ID)
-		case "preflight_question":
-			r.MatchedPreflightQuestions = append(r.MatchedPreflightQuestions, m.ID)
-		case "remediation_contract":
-			r.MatchedRemediationContracts = append(r.MatchedRemediationContracts, m.ID)
-		}
-	}
-	r.Invariants = unique(r.Invariants)
-	r.FailureModes = unique(r.FailureModes)
-	r.ForbiddenFixes = unique(r.ForbiddenFixes)
-	r.MatchedDecisions = unique(r.MatchedDecisions)
-	r.MatchedForbiddenAssumptions = unique(r.MatchedForbiddenAssumptions)
-	r.RequiredTests = unique(r.RequiredTests)
-	r.MatchedAuthorityRules = unique(r.MatchedAuthorityRules)
-	r.MatchedPreflightQuestions = unique(r.MatchedPreflightQuestions)
-	r.MatchedRemediationContracts = unique(r.MatchedRemediationContracts)
-	return r
-}
-
 // nonEmpty returns only the non-empty strings from the variadic list.
 func nonEmpty(paths ...string) []string {
 	out := make([]string, 0, len(paths))
