@@ -1931,3 +1931,58 @@ forbidden_fixes:
     rephrase or explain the value, but it may not add, remove, or invert the
     fact. If the backend returns a blocked reason, show the reason — not a
     generic or humorous substitute.
+
+# ── Generalization layer forbidden fixes (second pass) ───────────────────────
+# These forbidden fixes correspond to the new principle invariants and industry
+# patterns. They complete the reasoning chain from Globular incident → principle.
+
+- id: forbidden.missing_inventory_as_down
+  summary: |
+    Treat missing inventory, absent collector data, or an absent NodeRecord
+    in a snapshot as evidence that a node, service, or member is known-down.
+  related_invariants:
+    - evidence.missing_is_not_known_bad
+    - objectstore.partial_snapshot_unknown_not_down
+    - state.unknown_must_not_default_to_healthy
+  related_failure_modes:
+    - fm.industry.missing_inventory_misclassified_as_down
+    - fm.globular.objectstore_partial_snapshot
+  safe_alternative: |
+    Absent records mean UNKNOWN, not KNOWN_BAD. Use the three-bucket model:
+    PRESENT / UNKNOWN / KNOWN_BAD. Only KNOWN_BAD contributes to severity
+    escalation. When DataIncomplete=true and KNOWN_BAD count is 0, suppress
+    CRITICAL and emit a caveat about the partial snapshot instead.
+
+- id: forbidden.vip_as_node_identity
+  summary: |
+    Use a floating Virtual IP, load balancer address, keepalived VIP, or
+    failover endpoint as the stable identity of a node in etcd, ScyllaDB,
+    MinIO, or any other membership/leadership system.
+  related_invariants:
+    - identity.stable_node_identity_not_floating_vip
+    - ops.vip_requires_observed_owner
+  related_failure_modes:
+    - fm.industry.floating_address_used_as_durable_identity
+    - fm.globular.vip_transition_cascade
+  safe_alternative: |
+    Use StableIP(clusterVIP) — which filters the known cluster VIP from the
+    node's IP list — for all identity-bearing operations: etcd peer URLs,
+    ScyllaDB seed nodes, MinIO pool IPs, leader election self-match.
+    Never use PrimaryIP() or Ips[0] in identity contexts without first
+    excluding the floating VIP.
+
+- id: forbidden.dispatch_as_success
+  summary: |
+    Report success to the user immediately after dispatching an async,
+    irreversible, or destructive action — before the workflow or backend
+    has confirmed terminal success.
+  related_invariants:
+    - workflow.dispatch_is_not_completion
+    - workflow.success_requires_backend_confirmation
+  related_failure_modes:
+    - fm.industry.optimistic_success_for_irreversible_action
+  safe_alternative: |
+    Return ACCEPTED at dispatch time. Poll or stream workflow status until
+    a terminal state (SUCCEEDED / FAILED / BLOCKED) is observed. Report
+    that terminal state to the operator. For destructive or irreversible
+    operations, require explicit confirmation before dispatch — not after.

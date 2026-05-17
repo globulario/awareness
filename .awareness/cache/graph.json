@@ -1,237 +1,95 @@
 {
   "schema_version": "awareness.graph.v1",
   "project": "awareness",
-  "generated_at": "2026-05-16T17:48:28.779191106Z",
+  "generated_at": "2026-05-17T18:53:45.947046404Z",
   "nodes": [
     {
-      "id": "project:awareness",
-      "kind": "project",
-      "label": "awareness",
-      "properties": {
-        "kind": "library",
-        "root": "/home/dave/Documents/github.com/globulario/awareness"
-      }
+      "id": "adapter.boundary.breach",
+      "kind": "failure_mode"
     },
     {
-      "id": "invariant:import.wall.maintained",
-      "kind": "invariant",
-      "label": "import.wall.maintained",
-      "properties": {
-        "severity": "critical",
-        "tags": "_source:invariants.yaml"
-      }
+      "id": "globular.empty_advertise_ip_misclassifies_node",
+      "kind": "failure_mode"
     },
     {
-      "id": "invariant:schema.version.canonical",
-      "kind": "invariant",
-      "label": "schema.version.canonical",
-      "properties": {
-        "severity": "critical",
-        "tags": "_source:invariants.yaml"
-      }
+      "id": "globular.empty_store_result_deserialization",
+      "kind": "failure_mode"
     },
     {
-      "id": "invariant:graph.format.stable",
-      "kind": "invariant",
-      "label": "graph.format.stable",
-      "properties": {
-        "severity": "error",
-        "tags": "_source:invariants.yaml"
-      }
+      "id": "globular.endpoint_identity_scope_violation",
+      "kind": "failure_mode"
     },
     {
-      "id": "invariant:nulladapter.preferred",
-      "kind": "invariant",
-      "label": "nulladapter.preferred",
-      "properties": {
-        "severity": "error",
-        "tags": "_source:invariants.yaml"
-      }
+      "id": "globular.infra_desired_hash_mismatch_restart_storm",
+      "kind": "failure_mode"
     },
     {
-      "id": "invariant:test.coverage.per.package",
-      "kind": "invariant",
-      "label": "test.coverage.per.package",
-      "properties": {
-        "severity": "error",
-        "tags": "_source:invariants.yaml"
-      }
+      "id": "globular.installed_state_build_id_missing",
+      "kind": "failure_mode"
     },
     {
-      "id": "failure_mode:services.import.leak",
-      "kind": "failure_mode",
-      "label": "services.import.leak",
-      "properties": {
-        "severity": "critical",
-        "symptoms": "go build ./... in the awareness repo pulls in Globular runtime dependencies|import wall check (scripts/check-import-wall.sh) fails in CI|Projects that import awareness transitively gain unexpected Globular dependencies",
-        "tags": "_source:failure_modes.yaml"
-      }
+      "id": "globular.legacy_authority_path_still_called",
+      "kind": "failure_mode"
     },
     {
-      "id": "failure_mode:schema.version.drift",
-      "kind": "failure_mode",
-      "label": "schema.version.drift",
-      "properties": {
-        "severity": "critical",
-        "symptoms": "bundlesync.CurrentBundleSchemaVersion != bundle.CurrentSchemaVersion|Bundle validation fails in services with a schema version mismatch error|Bundles built by the standalone CLI are rejected by the services bundlesync validator",
-        "tags": "_source:failure_modes.yaml"
-      }
+      "id": "globular.topology_gated_package_false_drift",
+      "kind": "failure_mode"
     },
     {
-      "id": "failure_mode:adapter.boundary.breach",
-      "kind": "failure_mode",
-      "label": "adapter.boundary.breach",
-      "properties": {
-        "severity": "error",
-        "symptoms": "Cluster-specific imports (etcd client, Globular gRPC stubs) appear in go.mod|NullAdapter projects fail to compile after pulling a new version of awareness|MCP tools that should work offline attempt network calls and fail",
-        "tags": "_source:failure_modes.yaml"
-      }
+      "id": "globular.vip_used_as_member_endpoint",
+      "kind": "failure_mode"
     },
     {
-      "id": "forbidden_fix:no.hardcode.services.import",
+      "id": "globular.workflow_blocked_reason_unclassified",
+      "kind": "failure_mode"
+    },
+    {
+      "id": "globular.workflow_resume_without_receipt",
+      "kind": "failure_mode"
+    },
+    {
+      "id": "graph.format.stable",
+      "kind": "invariant"
+    },
+    {
+      "id": "import.wall.maintained",
+      "kind": "invariant"
+    },
+    {
+      "id": "no.duplicate.schema.version",
       "kind": "forbidden_fix",
-      "label": "no.hardcode.services.import",
-      "properties": {
-        "tags": "_source:forbidden_fixes.yaml"
-      }
+      "label": "Never hardcode the bundle schema version string outside of bundle/bundle.go"
     },
     {
-      "id": "forbidden_fix:no.duplicate.schema.version",
+      "id": "no.hardcode.services.import",
       "kind": "forbidden_fix",
-      "label": "no.duplicate.schema.version",
-      "properties": {
-        "tags": "_source:forbidden_fixes.yaml"
-      }
+      "label": "Never add a direct import of github.com/globulario/services to work around the adapter boundary"
     },
     {
-      "id": "forbidden_fix:no.silent.graph.truncation",
+      "id": "no.silent.graph.truncation",
       "kind": "forbidden_fix",
-      "label": "no.silent.graph.truncation",
-      "properties": {
-        "tags": "_source:forbidden_fixes.yaml"
-      }
+      "label": "Never write a partial graph.json on error — write atomically or not at all"
+    },
+    {
+      "id": "nulladapter.preferred",
+      "kind": "invariant"
+    },
+    {
+      "id": "schema.version.canonical",
+      "kind": "invariant"
+    },
+    {
+      "id": "schema.version.drift",
+      "kind": "failure_mode"
+    },
+    {
+      "id": "services.import.leak",
+      "kind": "failure_mode"
+    },
+    {
+      "id": "test.coverage.per.package",
+      "kind": "invariant"
     }
   ],
-  "edges": [
-    {
-      "from": "project:awareness",
-      "to": "invariant:import.wall.maintained",
-      "kind": "defines"
-    },
-    {
-      "from": "project:awareness",
-      "to": "invariant:schema.version.canonical",
-      "kind": "defines"
-    },
-    {
-      "from": "project:awareness",
-      "to": "invariant:graph.format.stable",
-      "kind": "defines"
-    },
-    {
-      "from": "project:awareness",
-      "to": "invariant:nulladapter.preferred",
-      "kind": "defines"
-    },
-    {
-      "from": "project:awareness",
-      "to": "invariant:test.coverage.per.package",
-      "kind": "defines"
-    },
-    {
-      "from": "project:awareness",
-      "to": "failure_mode:services.import.leak",
-      "kind": "knows_failure_mode"
-    },
-    {
-      "from": "project:awareness",
-      "to": "failure_mode:schema.version.drift",
-      "kind": "knows_failure_mode"
-    },
-    {
-      "from": "project:awareness",
-      "to": "failure_mode:adapter.boundary.breach",
-      "kind": "knows_failure_mode"
-    },
-    {
-      "from": "project:awareness",
-      "to": "forbidden_fix:no.hardcode.services.import",
-      "kind": "forbids_fix"
-    },
-    {
-      "from": "project:awareness",
-      "to": "forbidden_fix:no.duplicate.schema.version",
-      "kind": "forbids_fix"
-    },
-    {
-      "from": "project:awareness",
-      "to": "forbidden_fix:no.silent.graph.truncation",
-      "kind": "forbids_fix"
-    },
-    {
-      "from": "failure_mode:services.import.leak",
-      "to": "invariant:import.wall.maintained",
-      "kind": "related_to"
-    },
-    {
-      "from": "failure_mode:services.import.leak",
-      "to": "invariant:test.coverage.per.package",
-      "kind": "related_to"
-    },
-    {
-      "from": "failure_mode:schema.version.drift",
-      "to": "invariant:schema.version.canonical",
-      "kind": "related_to"
-    },
-    {
-      "from": "failure_mode:schema.version.drift",
-      "to": "invariant:test.coverage.per.package",
-      "kind": "related_to"
-    },
-    {
-      "from": "failure_mode:adapter.boundary.breach",
-      "to": "invariant:import.wall.maintained",
-      "kind": "related_to"
-    },
-    {
-      "from": "failure_mode:adapter.boundary.breach",
-      "to": "invariant:schema.version.canonical",
-      "kind": "related_to"
-    },
-    {
-      "from": "failure_mode:adapter.boundary.breach",
-      "to": "invariant:nulladapter.preferred",
-      "kind": "related_to"
-    },
-    {
-      "from": "forbidden_fix:no.hardcode.services.import",
-      "to": "invariant:import.wall.maintained",
-      "kind": "protects"
-    },
-    {
-      "from": "forbidden_fix:no.hardcode.services.import",
-      "to": "invariant:nulladapter.preferred",
-      "kind": "protects"
-    },
-    {
-      "from": "forbidden_fix:no.duplicate.schema.version",
-      "to": "invariant:import.wall.maintained",
-      "kind": "protects"
-    },
-    {
-      "from": "forbidden_fix:no.duplicate.schema.version",
-      "to": "invariant:schema.version.canonical",
-      "kind": "protects"
-    },
-    {
-      "from": "forbidden_fix:no.duplicate.schema.version",
-      "to": "invariant:test.coverage.per.package",
-      "kind": "protects"
-    },
-    {
-      "from": "forbidden_fix:no.silent.graph.truncation",
-      "to": "invariant:graph.format.stable",
-      "kind": "protects"
-    }
-  ]
+  "edges": null
 }

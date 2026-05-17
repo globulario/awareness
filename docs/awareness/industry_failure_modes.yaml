@@ -165,3 +165,106 @@ failure_modes:
     required_tests:
       - TestLeaderFence_RejectsWriteAfterLeaseExpiry
       - TestNewLeader_WaitsForPriorLeaseExpiry
+
+  # ── Second-pass industry patterns: generalization layer ──────────────────────
+  # These two patterns complete the reasoning chain:
+  #   Globular incident → industry pattern → architecture principle → invariant
+  # They are the generalization of the two most critical Globular-specific incidents.
+
+  - id: fm.industry.missing_inventory_misclassified_as_down
+    title: A collector or inventory gap is interpreted as proof that a node, service, or dependency is down
+    severity: critical
+    # origin: { type: industry_pattern, confidence: high }
+    symptoms:
+      - A doctor rule or health check fires CRITICAL because a node record is absent from a snapshot
+      - Incomplete inventory produces quorum-loss or member-missing findings
+      - Collector failure masquerades as service failure
+      - Restarting the collector (not the target service) clears the "failure" finding
+      - Finding disappears on the next collection cycle without any service change
+    root_cause: |
+      The diagnostic rule that counts "bad" or "down" members conflates two distinct states:
+        - ABSENT: the collector did not receive the record (could be a collection gap)
+        - KNOWN_BAD: the record is present and explicitly reports unhealthy/unreachable
+      Only KNOWN_BAD should increment the failure counter. ABSENT should increment the
+      UNKNOWN counter and produce a caveat, not a critical finding.
+
+      This class of mistake recurs because:
+        - Partial snapshots are treated as complete snapshots
+        - Null / missing entries in a map are treated as negative evidence
+        - The DataIncomplete flag is ignored or not propagated
+        - Quorum formulas use len(allNodes) - len(healthyNodes) without an UNKNOWN bucket
+    architecture_fix: |
+      Every health rule that counts cluster members must use a three-bucket model:
+        PRESENT (confirmed healthy) / UNKNOWN (absent, no evidence) / KNOWN_BAD (confirmed bad)
+      Only KNOWN_BAD increments the severity counter.
+      When the snapshot has DataIncomplete=true and KNOWN_BAD count is 0, suppress CRITICAL.
+      Emit a caveat: "partial snapshot — N nodes unobserved; result may be incomplete."
+    known_bad_fixes:
+      - Treat absent node record as known-down to simplify the quorum formula
+      - Remove the UNKNOWN bucket to reduce code complexity
+      - Fire CRITICAL on first collection without checking DataIncomplete
+      - Increase severity when data is sparse, on the theory that "less data = more risk"
+    related_invariants:
+      - evidence.missing_is_not_known_bad
+      - objectstore.partial_snapshot_unknown_not_down
+      - state.unknown_must_not_default_to_healthy
+    related_globular_failure_modes:
+      - fm.globular.objectstore_partial_snapshot
+    required_tests:
+      - TestAbsentRecord_ClassifiedAsUnknown_NotKnownBad
+      - TestPartialSnapshot_NoCritical_WhenOnlyUnknown
+      - TestDataIncomplete_SuppressesCritical_WhenNoKnownBad
+
+  - id: fm.industry.floating_address_used_as_durable_identity
+    title: A Virtual IP, load balancer address, or failover endpoint is used as the stable identity of a node or cluster member
+    severity: critical
+    # origin: { type: industry_pattern, confidence: high }
+    symptoms:
+      - Member identity changes unexpectedly during a VIP failover or load balancer reconfiguration
+      - Leader election selects the wrong node because it compares against the floating address
+      - Database or storage cluster membership includes the VIP instead of stable node IPs
+      - A service that does not hold the VIP suddenly becomes unreachable after the VIP moves
+      - Bootstrap or config scripts write the floating address into advertise URLs or peer lists
+      - Healthy node gets evicted from cluster membership after VIP transition to a different node
+    root_cause: |
+      A floating IP address (keepalived VIP, Elastic IP, load balancer frontend, failover DNS)
+      represents "reachability for the cluster role right now." It is not a property of any
+      single physical node — it can move to any node that wins the failover election.
+
+      When code uses this address as the node's identity (etcd peer URL, ScyllaDB seed,
+      MinIO pool member, leader election match), it writes an address that will later point
+      to a DIFFERENT physical node. The original node's identity is corrupted silently.
+      On the next VIP transition:
+        - The old holder's peer URL no longer matches its physical address
+        - The new holder's address is confused with the old holder's
+        - Membership reconcilers see a "stale member" and evict the original node
+
+      The root cause is always the same: `PrimaryIP()` or `Ips[0]` returns the VIP
+      when a node holds it, because VIPs appear as normal network interfaces.
+    architecture_fix: |
+      Separate stable node identity from floating reachability address at the data-model level.
+      Every consumer that needs a durable node IP must use a VIP-aware selection helper:
+        - Filter the known cluster VIP from the IP list before selecting
+        - Use StableIP(clusterVIP) — not PrimaryIP() or Ips[0]
+      Audit all identity-bearing code surfaces during any VIP transition:
+        - etcd member advertise/listen URLs
+        - Database seed node lists (ScyllaDB, etcd)
+        - Object storage pool member lists (MinIO)
+        - Leader election self-identification
+        - Health endpoint registration
+    known_bad_fixes:
+      - Normalize all node IPs to the currently-reachable address (picks up the VIP)
+      - Use PrimaryIP() without filtering the cluster VIP
+      - Patch only one subsystem (e.g., etcd) while leaving ScyllaDB or MinIO with the VIP
+      - Add the VIP to advertise URLs to "ensure reachability" (doubles the contamination)
+      - Maintain a hardcoded node→pool mapping to work around the wrong IP selection
+    related_invariants:
+      - identity.stable_node_identity_not_floating_vip
+      - ops.vip_requires_observed_owner
+    related_globular_failure_modes:
+      - fm.globular.vip_transition_cascade
+    required_tests:
+      - TestStableIP_ExcludesVIP
+      - TestEtcdAdvertiseURL_UsesStableIP_NotVIP
+      - TestScyllaHosts_ExcludeVIP
+      - TestNodeAgentFallback_NeverReturnsVIP

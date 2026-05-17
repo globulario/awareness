@@ -189,3 +189,128 @@ invariants:
       - TestServiceLiveness_UsesRuntimeProbe_NotDesiredState
     related_failure_modes:
       - fm.industry.partial_failure_hidden_by_global_green
+      - fm.industry.missing_inventory_misclassified_as_down
+
+  # ── Generalization principles (second pass) ───────────────────────────────────
+  # These invariants encode the abstract reasoning layer. They generalize from
+  # specific Globular incidents to classes of distributed-system mistakes, so
+  # AI agents can recognize not just the exact bug but the family it belongs to.
+
+  - id: state.unknown_must_not_default_to_healthy
+    title: Unknown, incomplete, or stale state must not be rendered or classified as healthy
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Unknown state is a first-class operator truth. When a collector fails, a snapshot
+      is incomplete, or a data source is stale, the resulting gap is UNKNOWN — not HEALTHY.
+      Any code path that defaults an unknown or unobserved state to healthy is suppressing
+      real operational evidence and hiding potential failures from operators.
+      UNKNOWN must propagate to every status rollup, badge, and health summary.
+    enforcement: |
+      Status aggregation logic must explicitly handle three states: HEALTHY, DEGRADED, UNKNOWN.
+      UNKNOWN must never be coerced to HEALTHY. When the data source is absent or stale,
+      the rollup must emit UNKNOWN or STALE — not a passing result.
+      Doctor rules, health dashboards, and CLI output must all respect this.
+    forbidden_fixes:
+      - forbidden.unknown_as_healthy
+    required_tests:
+      - TestStatusRollup_UnknownSubsystem_NotGreen
+      - TestCollectorGap_ProducesUnknown_NotHealthy
+    related_failure_modes:
+      - fm.globular.objectstore_partial_snapshot
+      - fm.industry.partial_failure_hidden_by_global_green
+      - fm.industry.missing_inventory_misclassified_as_down
+
+  - id: evidence.missing_is_not_known_bad
+    title: Missing evidence must not be treated as evidence of failure unless the contract explicitly says absence proves failure
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      In distributed systems, missing data has two very different meanings:
+        - Collector gap: the evidence collection path failed or timed out
+        - Known-bad: the node is confirmed unreachable or in a failure state
+      These are not the same. A node absent from a snapshot means the collector
+      did not receive its record — it does not mean MinIO is down on that node,
+      that the etcd member is evicted, or that the service is failed.
+      Treating absence as proof of failure causes false CRITICAL findings,
+      incorrect remediation, and operator alarm fatigue.
+    enforcement: |
+      Any rule that counts "down" members, "missing" nodes, or "absent" services
+      must distinguish:
+        PRESENT      — evidence collected and health confirmed
+        UNKNOWN      — evidence absent (collector gap, timeout, incomplete snapshot)
+        KNOWN_BAD    — evidence collected and confirms unhealthy
+      Only KNOWN_BAD contributes to severity escalation. UNKNOWN requires a caveat,
+      not a critical finding. Rules that cannot distinguish the two must emit UNKNOWN
+      and defer to the operator.
+    forbidden_fixes:
+      - forbidden.missing_inventory_as_down
+      - forbidden.partial_snapshot_false_quorum_loss
+    required_tests:
+      - TestAbsentRecord_ClassifiedAsUnknown_NotKnownBad
+      - TestPartialSnapshot_NoCritical_WhenOnlyUnknown
+    related_failure_modes:
+      - fm.globular.objectstore_partial_snapshot
+      - fm.industry.missing_inventory_misclassified_as_down
+
+  - id: identity.stable_node_identity_not_floating_vip
+    title: Stable node identity must not be derived from a floating VIP or failover reachability address
+    severity: critical
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      A floating Virtual IP (VIP) represents reachability for a cluster role — it moves
+      between nodes during failover. It is not the durable identity of any node.
+      When a VIP is used as the stable identity for a node (etcd advertise URL, ScyllaDB
+      host entry, MinIO pool IP, controller leader IP match), the identity becomes
+      unstable: it moves to a different physical node without the affected node being
+      aware. This causes membership corruption, leader election failures, and cascading
+      multi-service outages when the VIP transitions.
+    enforcement: |
+      All code that needs a stable, durable node IP must use StableIP(clusterVIP),
+      which explicitly excludes the floating VIP from the IP selection.
+      Never use PrimaryIP(), Ips[0], or AdvertiseIp without first filtering the VIP.
+      The VIP must be read from /globular/ingress/v1/spec and excluded before any
+      identity-bearing operation.
+    forbidden_fixes:
+      - forbidden.vip_as_node_identity
+      - hardcode_node_to_pool_mapping_to_avoid_filter
+      - filter_out_vip_in_node_identity_ips
+    required_tests:
+      - TestStableIP_ExcludesVIP
+      - TestEtcdAdvertiseURL_UsesStableIP_NotVIP
+      - TestScyllaHosts_ExcludeVIP
+    related_failure_modes:
+      - fm.globular.vip_transition_cascade
+      - fm.industry.floating_address_used_as_durable_identity
+
+  - id: workflow.dispatch_is_not_completion
+    title: Dispatching an action is not proof that the action completed successfully
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      When an operator submits a command, clicks a button, or calls an RPC, the system
+      receives the intent and dispatches it — it does not immediately execute and confirm
+      completion. For any operation that goes through a workflow (install, upgrade, topology
+      change, configuration apply), there is a gap between dispatch and convergence.
+      Reporting success at dispatch time misleads the operator into believing the system
+      has already converged. For irreversible or destructive operations, this creates a
+      false safety signal — the operator believes the task is done and moves on.
+    enforcement: |
+      Dispatch events must return ACCEPTED, not SUCCESS.
+      Callers (CLI, UI, MCP tools) must poll or stream the workflow status until a
+      terminal state (SUCCEEDED, FAILED, BLOCKED) is observed.
+      Success must be reported only after terminal state is confirmed.
+      Destructive operations must require explicit operator confirmation before dispatch.
+    forbidden_fixes:
+      - forbidden.dispatch_as_success
+      - forbidden.optimistic_destructive_success
+    required_tests:
+      - TestDispatch_ReturnsAccepted_NotSuccess
+      - TestCLI_WaitsForTerminalWorkflowState
+    related_failure_modes:
+      - fm.industry.optimistic_success_for_irreversible_action
+      - fm.industry.missing_inventory_misclassified_as_down

@@ -45,6 +45,10 @@ invariants:
       - TestStatusBadge_BoundToRuntimeProbe_NotDesiredState
       - TestInstalledIndicator_BoundToInstalledStateRecord
       - TestWorkflowProgress_BoundToWorkflowTerminalState
+    related_principles:
+      - state.runtime_not_desired
+      - state.unknown_must_not_default_to_healthy
+      - evidence.missing_is_not_known_bad
 
   - id: ui.dangerous_warning_must_remain_visible
     title: Dangerous or destructive-operation warnings must remain visible across responsive layouts and skins
@@ -153,3 +157,63 @@ invariants:
       - TestStatusIndicator_MarkedStale_WhenCollectorLags
     related_failure_modes:
       - fm.industry.stale_cache_served_as_live_state
+
+  # ── Second-pass frontend invariants: generalization cross-links ───────────────
+
+  - id: ui.success_requires_authoritative_confirmation
+    title: UI success states must be bound to backend, workflow, or runtime confirmation — not local click or dispatch state
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      A button click, form submit, or API call dispatch is not proof that the operation
+      succeeded. For any operation that mutates cluster state (installs, upgrades, topology
+      changes, decommissions), the UI must not show a success badge, toast, or confirmation
+      until the workflow or backend has reached a terminal success state.
+      Premature success reporting misleads the operator into believing the operation is
+      complete, and for irreversible operations creates a dangerous false safety signal.
+    enforcement: |
+      Before editing any component that shows post-action success state (success toast,
+      completion badge, "done" message), verify that the success signal is bound to a
+      workflow terminal SUCCEEDED state or explicit backend confirmation — not to the
+      dispatch RPC response. Check that ACCEPTED and SUCCEEDED are handled separately.
+    forbidden_fixes:
+      - forbidden.dispatch_as_success
+      - forbidden.optimistic_destructive_success
+    required_tests:
+      - TestSuccessToast_NotShown_OnDispatchOnly
+      - TestSuccessToast_ShownOnly_OnWorkflowTerminal
+    related_principles:
+      - workflow.dispatch_is_not_completion
+    related_failure_modes:
+      - fm.industry.optimistic_success_for_irreversible_action
+
+  - id: ui.floating_identity_must_not_be_hidden
+    title: UI screens showing cluster membership, leader identity, or network identity must distinguish stable node identity from floating VIP reachability
+    severity: high
+    status: active
+    # origin: { type: principle, confidence: high }
+    summary: |
+      Operator UIs that display cluster topology, etcd membership, storage pool membership,
+      leader identity, or node network addresses must distinguish:
+        - Stable node IP: the durable, per-physical-node address that remains constant
+        - Floating VIP: the cluster's reachable gateway address, held by one node at a time
+      When a UI shows the VIP as if it were a node's IP, the operator cannot tell which
+      physical node the VIP is currently on, cannot detect VIP contamination in membership
+      lists, and may make dangerous operational decisions based on the wrong identity.
+    enforcement: |
+      Before editing any UI component that renders IP addresses, peer URLs, etcd members,
+      ScyllaDB seeds, MinIO pool members, or gateway IPs, verify that:
+        - The cluster VIP is shown distinctly (labeled "VIP" or "gateway address")
+        - Individual node IPs are shown as their stable, physical addresses
+        - The UI does not conflate PrimaryIP() output with stable node identity
+    forbidden_fixes:
+      - forbidden.vip_as_node_identity
+    required_tests:
+      - TestMembershipView_DistinguishesVIP_FromNodeIP
+      - TestLeaderView_ShowsStableNodeIP_NotVIP
+    related_principles:
+      - identity.stable_node_identity_not_floating_vip
+    related_failure_modes:
+      - fm.globular.vip_transition_cascade
+      - fm.industry.floating_address_used_as_durable_identity
