@@ -636,7 +636,11 @@ func registerTools(srv *mcpServer) {
 		terms := knowledgeTerms(ref)
 		var matchedFixes []ForbiddenFixEntry
 		for _, f := range forbiddenFixes {
-			blob := strings.ToLower(f.ID + " " + f.Title + " " + f.Description + " " + strings.Join(f.Tags, " "))
+			blob := strings.ToLower(strings.Join([]string{
+				f.ID, f.Title, f.Summary, f.Description,
+				f.SafeAlternative, f.CorrectApproach,
+				strings.Join(f.Tags, " "),
+			}, " "))
 			if countMatches(blob, terms) > 0 {
 				matchedFixes = append(matchedFixes, f)
 				if len(matchedFixes) >= 10 {

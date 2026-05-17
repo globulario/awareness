@@ -14,35 +14,58 @@ import (
 // ─── Typed knowledge entries ──────────────────────────────────────────────────
 
 // InvariantEntry is one item from invariants.yaml.
+//
+// Two YAML schemas coexist in this project:
+//   - module-self format (.awareness/):   uses "description:"
+//   - docs/awareness format:              uses "summary:" (and "enforcement:", "protects:", etc.)
+//
+// Both are captured here so the search blob is populated regardless of which format the file uses.
 type InvariantEntry struct {
 	ID          string   `yaml:"id" json:"id"`
 	Title       string   `yaml:"title" json:"title"`
-	Description string   `yaml:"description" json:"description"`
+	Summary     string   `yaml:"summary" json:"summary,omitempty"`
+	Description string   `yaml:"description" json:"description,omitempty"`
+	Enforcement string   `yaml:"enforcement" json:"enforcement,omitempty"`
 	Severity    string   `yaml:"severity,omitempty" json:"severity,omitempty"`
 	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 	SourcePath  string   `yaml:"-" json:"source_path,omitempty"`
 }
 
 // FailureModeEntry is one item from failure_modes.yaml.
+//
+// Two YAML schemas coexist:
+//   - module-self / failuregraph_seeds format: uses "description:", "wrong_fixes:"
+//   - docs/awareness format:                   uses "summary:", "root_cause:", "known_bad_fixes:", "architecture_fix:"
 type FailureModeEntry struct {
-	ID          string   `yaml:"id" json:"id"`
-	Title       string   `yaml:"title" json:"title"`
-	Description string   `yaml:"description" json:"description"`
-	Symptoms    []string `yaml:"symptoms,omitempty" json:"symptoms,omitempty"`
-	WrongFixes  []string `yaml:"wrong_fixes,omitempty" json:"wrong_fixes,omitempty"`
-	Severity    string   `yaml:"severity,omitempty" json:"severity,omitempty"`
-	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	SourcePath  string   `yaml:"-" json:"source_path,omitempty"`
+	ID              string   `yaml:"id" json:"id"`
+	Title           string   `yaml:"title" json:"title"`
+	Summary         string   `yaml:"summary" json:"summary,omitempty"`
+	Description     string   `yaml:"description" json:"description,omitempty"`
+	RootCause       string   `yaml:"root_cause" json:"root_cause,omitempty"`
+	ArchitectureFix string   `yaml:"architecture_fix" json:"architecture_fix,omitempty"`
+	Symptoms        []string `yaml:"symptoms,omitempty" json:"symptoms,omitempty"`
+	WrongFixes      []string `yaml:"wrong_fixes,omitempty" json:"wrong_fixes,omitempty"`
+	KnownBadFixes   []string `yaml:"known_bad_fixes,omitempty" json:"known_bad_fixes,omitempty"`
+	Severity        string   `yaml:"severity,omitempty" json:"severity,omitempty"`
+	Tags            []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	SourcePath      string   `yaml:"-" json:"source_path,omitempty"`
 }
 
 // ForbiddenFixEntry is one item from forbidden_fixes.yaml.
+//
+// Two YAML schemas coexist:
+//   - docs/awareness format:  uses "summary:", "safe_alternative:", "related_invariants:"
+//   - module-self format:     uses "description:", "correct_approach:", "forbidden_pattern:"
 type ForbiddenFixEntry struct {
-	ID          string   `yaml:"id" json:"id"`
-	Title       string   `yaml:"title" json:"title"`
-	Description string   `yaml:"description" json:"description"`
-	AppliesWhen string   `yaml:"applies_when,omitempty" json:"applies_when,omitempty"`
-	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	SourcePath  string   `yaml:"-" json:"source_path,omitempty"`
+	ID              string   `yaml:"id" json:"id"`
+	Title           string   `yaml:"title" json:"title"`
+	Summary         string   `yaml:"summary" json:"summary,omitempty"`
+	Description     string   `yaml:"description" json:"description,omitempty"`
+	SafeAlternative string   `yaml:"safe_alternative" json:"safe_alternative,omitempty"`
+	CorrectApproach string   `yaml:"correct_approach" json:"correct_approach,omitempty"`
+	AppliesWhen     string   `yaml:"applies_when,omitempty" json:"applies_when,omitempty"`
+	Tags            []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	SourcePath      string   `yaml:"-" json:"source_path,omitempty"`
 }
 
 // ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -142,7 +165,10 @@ func searchInvariants(entries []InvariantEntry, query string, limit int) []Invar
 	}
 	var scored []scoredInvariant
 	for _, e := range entries {
-		blob := strings.ToLower(e.ID + " " + e.Title + " " + e.Description + " " + strings.Join(e.Tags, " "))
+		blob := strings.ToLower(strings.Join([]string{
+			e.ID, e.Title, e.Summary, e.Description, e.Enforcement,
+			strings.Join(e.Tags, " "),
+		}, " "))
 		s := countMatches(blob, terms)
 		if s > 0 {
 			scored = append(scored, scoredInvariant{e, s})
@@ -172,7 +198,13 @@ func searchFailureModes(entries []FailureModeEntry, query string, limit int) []F
 	}
 	var scored []scoredFailureMode
 	for _, e := range entries {
-		blob := strings.ToLower(e.ID + " " + e.Title + " " + e.Description + " " + strings.Join(e.Symptoms, " ") + " " + strings.Join(e.Tags, " "))
+		blob := strings.ToLower(strings.Join([]string{
+			e.ID, e.Title, e.Summary, e.Description, e.RootCause, e.ArchitectureFix,
+			strings.Join(e.Symptoms, " "),
+			strings.Join(e.WrongFixes, " "),
+			strings.Join(e.KnownBadFixes, " "),
+			strings.Join(e.Tags, " "),
+		}, " "))
 		s := countMatches(blob, terms)
 		if s > 0 {
 			scored = append(scored, scoredFailureMode{e, s})
