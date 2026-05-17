@@ -59,13 +59,15 @@ type BuildOptions struct {
 
 // BuildResult holds the output of a static graph build.
 type BuildResult struct {
-	Graph             *GraphFile
-	NodeCount         int
-	EdgeCount         int
-	InvariantCount    int
-	FailureModeCount  int
-	ForbiddenFixCount int
-	SourceFileCount   int
+	Graph              *GraphFile
+	NodeCount          int
+	EdgeCount          int
+	InvariantCount     int
+	FailureModeCount   int
+	ForbiddenFixCount  int
+	SourceFileCount    int // Go source files
+	FrontendFileCount  int // TypeScript/React source files
+	FrontendNodeCount  int // frontend_* construct nodes (components, routes, etc.)
 }
 
 // Build constructs a static GraphFile from the provided knowledge paths.
@@ -116,7 +118,7 @@ func Build(input BuildInput, opts BuildOptions) (*BuildResult, error) {
 		}
 	}
 
-	var sourceFileCount int
+	var sourceFileCount, frontendFileCount int
 	if opts.IncludeSourceFiles {
 		for _, root := range input.SourceRoots {
 			count, err := addSourceFileNodes(gf, root)
@@ -130,8 +132,16 @@ func Build(input BuildInput, opts BuildOptions) (*BuildResult, error) {
 		for _, root := range input.SourceRoots {
 			count, err := addFrontendNodes(gf, root)
 			if err == nil {
-				sourceFileCount += count
+				frontendFileCount += count
 			}
+		}
+	}
+
+	// Count frontend_* construct nodes (excludes source_file nodes).
+	var frontendNodeCount int
+	for _, n := range gf.Nodes {
+		if strings.HasPrefix(n.Kind, "frontend_") {
+			frontendNodeCount++
 		}
 	}
 
@@ -147,6 +157,8 @@ func Build(input BuildInput, opts BuildOptions) (*BuildResult, error) {
 		FailureModeCount:  failureModeCount,
 		ForbiddenFixCount: forbiddenFixCount,
 		SourceFileCount:   sourceFileCount,
+		FrontendFileCount: frontendFileCount,
+		FrontendNodeCount: frontendNodeCount,
 	}, nil
 }
 

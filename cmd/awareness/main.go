@@ -500,7 +500,7 @@ func runGraphCmd(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "awareness graph: unknown subcommand %q\n", sub)
 		fmt.Fprintln(os.Stderr, "usage:")
-		fmt.Fprintln(os.Stderr, "  awareness graph build    [--project-root PATH] [--out PATH] [--sources]")
+		fmt.Fprintln(os.Stderr, "  awareness graph build    [--project-root PATH] [--out PATH] [--sources] [--no-typescript]")
 		fmt.Fprintln(os.Stderr, "  awareness graph query    [--project-root PATH] --query TEXT [--limit N]")
 		fmt.Fprintln(os.Stderr, "  awareness graph inspect  [--project-root PATH]")
 		os.Exit(1)
@@ -510,6 +510,7 @@ func runGraphCmd(args []string) {
 func runGraphBuild(args []string) {
 	var projectRoot, out string
 	includeSources := false
+	noTypeScript := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--project-root":
@@ -524,6 +525,8 @@ func runGraphBuild(args []string) {
 			}
 		case "--sources":
 			includeSources = true
+		case "--no-typescript":
+			noTypeScript = true
 		}
 	}
 
@@ -555,8 +558,11 @@ func runGraphBuild(args []string) {
 		SourceRoots:       prof.SourceRoots,
 	}
 
+	includeTypeScript := prof.Languages.TypeScript && !noTypeScript
+
 	result, err := graph.Build(input, graph.BuildOptions{
 		IncludeSourceFiles: includeSources,
+		IncludeTypeScript:  includeTypeScript,
 	})
 	if err != nil {
 		fatal("graph build: %v", err)
@@ -584,7 +590,11 @@ func runGraphBuild(args []string) {
 	fmt.Printf("  failure_modes: %d\n", result.FailureModeCount)
 	fmt.Printf("  forbidden_fixes: %d\n", result.ForbiddenFixCount)
 	if includeSources {
-		fmt.Printf("  source_files: %d\n", result.SourceFileCount)
+		fmt.Printf("  source_files (go): %d\n", result.SourceFileCount)
+	}
+	if includeTypeScript {
+		fmt.Printf("  source_files (ts): %d\n", result.FrontendFileCount)
+		fmt.Printf("  frontend_nodes: %d\n", result.FrontendNodeCount)
 	}
 	fmt.Println("status: ok")
 }
@@ -860,7 +870,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  assurance       [--project-root PATH] [--format text|json]")
 	fmt.Fprintln(os.Stderr, "  selfcheck       [--project-root PATH] [--format text|json]")
 	fmt.Fprintln(os.Stderr, "  bundle build    --out PATH [--project-root PATH] [--revision REV] [--version VER]")
-	fmt.Fprintln(os.Stderr, "  graph build     [--project-root PATH] [--out PATH] [--sources]")
+	fmt.Fprintln(os.Stderr, "  graph build     [--project-root PATH] [--out PATH] [--sources] [--no-typescript]")
 	fmt.Fprintln(os.Stderr, "  graph query     [--project-root PATH] --query TEXT [--limit N]")
 	fmt.Fprintln(os.Stderr, "  graph inspect   [--project-root PATH]")
 }
