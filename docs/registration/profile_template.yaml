@@ -1,0 +1,64 @@
+# .awareness.yaml — Project Profile Template
+#
+# Copy this file to your project root as .awareness.yaml and fill it in.
+# Remove or comment out sections that don't apply to your project kind.
+#
+# Project kinds:
+#   frontend  backend  service  library  cli  infrastructure  workflow  operator  package
+#
+# Registration procedure: docs/project-registration.md
+
+name: my-project            # short machine-safe name (no spaces)
+kind: service               # see kinds above
+
+languages:
+  go: true                  # set to true for each language present
+  typescript: false
+  react: false
+  yaml: true
+  markdown: true
+
+# source_roots: directories containing source code to index for Go and TypeScript.
+# Paths are relative to the project root.
+source_roots:
+  - cmd
+  - internal
+  - pkg
+
+# runtime: controls live cluster signal collection.
+# For frontend projects and libraries, set enabled: false.
+runtime:
+  enabled: false            # set true only for deployed Globular services
+  adapter: null             # "globular" for services in the Globular cluster
+
+# graph: controls where the awareness graph is cached.
+graph:
+  cache_dir: .awareness/cache
+
+# awareness: paths to knowledge files (relative to project root).
+# Add files as you create them — missing paths are silently skipped.
+awareness:
+  root: .awareness
+  invariants:
+    - .awareness/invariants.yaml
+    # Add more: docs/awareness/state_authority_invariants.yaml
+  failure_modes:
+    - .awareness/failure_modes.yaml
+    # Add more: docs/awareness/industry_failure_modes.yaml
+  forbidden_fixes:
+    - .awareness/forbidden_fixes.yaml
+  # Optional extended knowledge files:
+  # incident_patterns:
+  #   - .awareness/incident_patterns.yaml
+  # decisions:
+  #   - .awareness/decisions.yaml
+  # authority_rules:
+  #   - .awareness/authority_rules.yaml
+  # required_tests:
+  #   - .awareness/required_tests.yaml
+  # subsystem_boundaries:
+  #   - .awareness/subsystem_boundaries.yaml
+  # preflight_questions:
+  #   - .awareness/preflight_questions.yaml
+  # remediation_contracts:
+  #   - .awareness/remediation_contracts.yaml
