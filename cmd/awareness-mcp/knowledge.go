@@ -21,14 +21,16 @@ import (
 //
 // Both are captured here so the search blob is populated regardless of which format the file uses.
 type InvariantEntry struct {
-	ID          string   `yaml:"id" json:"id"`
-	Title       string   `yaml:"title" json:"title"`
-	Summary     string   `yaml:"summary" json:"summary,omitempty"`
-	Description string   `yaml:"description" json:"description,omitempty"`
-	Enforcement string   `yaml:"enforcement" json:"enforcement,omitempty"`
-	Severity    string   `yaml:"severity,omitempty" json:"severity,omitempty"`
-	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	SourcePath  string   `yaml:"-" json:"source_path,omitempty"`
+	ID                  string   `yaml:"id" json:"id"`
+	Title               string   `yaml:"title" json:"title"`
+	Summary             string   `yaml:"summary" json:"summary,omitempty"`
+	Description         string   `yaml:"description" json:"description,omitempty"`
+	Enforcement         string   `yaml:"enforcement" json:"enforcement,omitempty"`
+	Severity            string   `yaml:"severity,omitempty" json:"severity,omitempty"`
+	Tags                []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	RelatedFailureModes []string `yaml:"related_failure_modes,omitempty" json:"related_failure_modes,omitempty"`
+	RelatedPrinciples   []string `yaml:"related_principles,omitempty" json:"related_principles,omitempty"`
+	SourcePath          string   `yaml:"-" json:"source_path,omitempty"`
 }
 
 // FailureModeEntry is one item from failure_modes.yaml.
@@ -37,18 +39,21 @@ type InvariantEntry struct {
 //   - module-self / failuregraph_seeds format: uses "description:", "wrong_fixes:"
 //   - docs/awareness format:                   uses "summary:", "root_cause:", "known_bad_fixes:", "architecture_fix:"
 type FailureModeEntry struct {
-	ID              string   `yaml:"id" json:"id"`
-	Title           string   `yaml:"title" json:"title"`
-	Summary         string   `yaml:"summary" json:"summary,omitempty"`
-	Description     string   `yaml:"description" json:"description,omitempty"`
-	RootCause       string   `yaml:"root_cause" json:"root_cause,omitempty"`
-	ArchitectureFix string   `yaml:"architecture_fix" json:"architecture_fix,omitempty"`
-	Symptoms        []string `yaml:"symptoms,omitempty" json:"symptoms,omitempty"`
-	WrongFixes      []string `yaml:"wrong_fixes,omitempty" json:"wrong_fixes,omitempty"`
-	KnownBadFixes   []string `yaml:"known_bad_fixes,omitempty" json:"known_bad_fixes,omitempty"`
-	Severity        string   `yaml:"severity,omitempty" json:"severity,omitempty"`
-	Tags            []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	SourcePath      string   `yaml:"-" json:"source_path,omitempty"`
+	ID                      string   `yaml:"id" json:"id"`
+	Title                   string   `yaml:"title" json:"title"`
+	Summary                 string   `yaml:"summary" json:"summary,omitempty"`
+	Description             string   `yaml:"description" json:"description,omitempty"`
+	RootCause               string   `yaml:"root_cause" json:"root_cause,omitempty"`
+	ArchitectureFix         string   `yaml:"architecture_fix" json:"architecture_fix,omitempty"`
+	Symptoms                []string `yaml:"symptoms,omitempty" json:"symptoms,omitempty"`
+	WrongFixes              []string `yaml:"wrong_fixes,omitempty" json:"wrong_fixes,omitempty"`
+	KnownBadFixes           []string `yaml:"known_bad_fixes,omitempty" json:"known_bad_fixes,omitempty"`
+	RelatedInvariants       []string `yaml:"related_invariants,omitempty" json:"related_invariants,omitempty"`
+	RelatedIndustryPatterns []string `yaml:"related_industry_patterns,omitempty" json:"related_industry_patterns,omitempty"`
+	RelatedGlobularFMs      []string `yaml:"related_globular_failure_modes,omitempty" json:"related_globular_failure_modes,omitempty"`
+	Severity                string   `yaml:"severity,omitempty" json:"severity,omitempty"`
+	Tags                    []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	SourcePath              string   `yaml:"-" json:"source_path,omitempty"`
 }
 
 // ForbiddenFixEntry is one item from forbidden_fixes.yaml.
@@ -57,15 +62,17 @@ type FailureModeEntry struct {
 //   - docs/awareness format:  uses "summary:", "safe_alternative:", "related_invariants:"
 //   - module-self format:     uses "description:", "correct_approach:", "forbidden_pattern:"
 type ForbiddenFixEntry struct {
-	ID              string   `yaml:"id" json:"id"`
-	Title           string   `yaml:"title" json:"title"`
-	Summary         string   `yaml:"summary" json:"summary,omitempty"`
-	Description     string   `yaml:"description" json:"description,omitempty"`
-	SafeAlternative string   `yaml:"safe_alternative" json:"safe_alternative,omitempty"`
-	CorrectApproach string   `yaml:"correct_approach" json:"correct_approach,omitempty"`
-	AppliesWhen     string   `yaml:"applies_when,omitempty" json:"applies_when,omitempty"`
-	Tags            []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	SourcePath      string   `yaml:"-" json:"source_path,omitempty"`
+	ID                  string   `yaml:"id" json:"id"`
+	Title               string   `yaml:"title" json:"title"`
+	Summary             string   `yaml:"summary" json:"summary,omitempty"`
+	Description         string   `yaml:"description" json:"description,omitempty"`
+	SafeAlternative     string   `yaml:"safe_alternative" json:"safe_alternative,omitempty"`
+	CorrectApproach     string   `yaml:"correct_approach" json:"correct_approach,omitempty"`
+	AppliesWhen         string   `yaml:"applies_when,omitempty" json:"applies_when,omitempty"`
+	RelatedInvariants   []string `yaml:"related_invariants,omitempty" json:"related_invariants,omitempty"`
+	RelatedFailureModes []string `yaml:"related_failure_modes,omitempty" json:"related_failure_modes,omitempty"`
+	Tags                []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	SourcePath          string   `yaml:"-" json:"source_path,omitempty"`
 }
 
 // ─── Loaders ─────────────────────────────────────────────────────────────────
@@ -168,6 +175,8 @@ func searchInvariants(entries []InvariantEntry, query string, limit int) []Invar
 		blob := strings.ToLower(strings.Join([]string{
 			e.ID, e.Title, e.Summary, e.Description, e.Enforcement,
 			strings.Join(e.Tags, " "),
+			strings.Join(e.RelatedFailureModes, " "),
+			strings.Join(e.RelatedPrinciples, " "),
 		}, " "))
 		s := countMatches(blob, terms)
 		if s > 0 {
@@ -203,6 +212,9 @@ func searchFailureModes(entries []FailureModeEntry, query string, limit int) []F
 			strings.Join(e.Symptoms, " "),
 			strings.Join(e.WrongFixes, " "),
 			strings.Join(e.KnownBadFixes, " "),
+			strings.Join(e.RelatedInvariants, " "),
+			strings.Join(e.RelatedIndustryPatterns, " "),
+			strings.Join(e.RelatedGlobularFMs, " "),
 			strings.Join(e.Tags, " "),
 		}, " "))
 		s := countMatches(blob, terms)

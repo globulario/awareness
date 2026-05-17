@@ -639,6 +639,8 @@ func registerTools(srv *mcpServer) {
 			blob := strings.ToLower(strings.Join([]string{
 				f.ID, f.Title, f.Summary, f.Description,
 				f.SafeAlternative, f.CorrectApproach,
+				strings.Join(f.RelatedInvariants, " "),
+				strings.Join(f.RelatedFailureModes, " "),
 				strings.Join(f.Tags, " "),
 			}, " "))
 			if countMatches(blob, terms) > 0 {

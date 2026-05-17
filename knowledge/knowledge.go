@@ -69,6 +69,7 @@ type Invariant struct {
 	// Globular extended fields
 	ForbiddenFixes      []string `yaml:"forbidden_fixes"`
 	RelatedFailureModes []string `yaml:"related_failure_modes"`
+	RelatedPrinciples   []string `yaml:"related_principles"`
 	RequiredTests       []string `yaml:"required_tests"`
 	ProvenBy    ProvenByLinks `yaml:"proven_by"`
 	UsedBy      UsedByLinks   `yaml:"used_by"`
@@ -93,9 +94,11 @@ type FailureMode struct {
 	ForbiddenFixes  []string `yaml:"forbidden_fixes"`
 	RegressionTests []string `yaml:"regression_tests"`
 	// Globular extended fields
-	RelatedInvariants []string `yaml:"related_invariants"`
-	RelatedServices   []string `yaml:"related_services"`
-	RequiredTests     []string `yaml:"required_tests"`
+	RelatedInvariants       []string `yaml:"related_invariants"`
+	RelatedServices         []string `yaml:"related_services"`
+	RelatedIndustryPatterns []string `yaml:"related_industry_patterns"`
+	RelatedGlobularFMs      []string `yaml:"related_globular_failure_modes"`
+	RequiredTests           []string `yaml:"required_tests"`
 	FreshnessFields `yaml:",inline"`
 }
 
@@ -106,9 +109,10 @@ type ForbiddenFix struct {
 	Description      string   `yaml:"description"`
 	ForbiddenPattern string   `yaml:"forbidden_pattern"`
 	// correct_approach (standalone) / safe_alternative (Globular) — both loaded
-	CorrectApproach  string   `yaml:"correct_approach"`
-	SafeAlternative  string   `yaml:"safe_alternative"`
+	CorrectApproach   string   `yaml:"correct_approach"`
+	SafeAlternative   string   `yaml:"safe_alternative"`
 	RelatedInvariants []string `yaml:"related_invariants"`
+	RelatedFailureModes []string `yaml:"related_failure_modes"`
 }
 
 // IncidentPattern encodes the shape of a dangerous edit extracted from a real incident.
@@ -748,6 +752,7 @@ func Search(base *Base, task string, files []string) []Match {
 			strings.Join(inv.Files, " "),
 			strings.Join(inv.ForbiddenFixes, " "),
 			strings.Join(inv.RelatedFailureModes, " "),
+			strings.Join(inv.RelatedPrinciples, " "),
 		}, " "))
 		if m, ok := scoreBlob(blob, "invariant", inv.ID, title, inv.Severity, terms); ok {
 			out = append(out, m)
@@ -766,6 +771,8 @@ func Search(base *Base, task string, files []string) []Match {
 			strings.Join(fm.ForbiddenFixes, " "),
 			strings.Join(fm.CorrectApproach, " "),
 			strings.Join(fm.RelatedInvariants, " "),
+			strings.Join(fm.RelatedIndustryPatterns, " "),
+			strings.Join(fm.RelatedGlobularFMs, " "),
 		}, " "))
 		if m, ok := scoreBlob(blob, "failure_mode", fm.ID, title, fm.Severity, terms); ok {
 			out = append(out, m)
@@ -777,6 +784,7 @@ func Search(base *Base, task string, files []string) []Match {
 			ff.ID, ff.Summary, ff.Description, ff.ForbiddenPattern,
 			ff.CorrectApproach, ff.SafeAlternative,
 			strings.Join(ff.RelatedInvariants, " "),
+			strings.Join(ff.RelatedFailureModes, " "),
 		}, " "))
 		if m, ok := scoreBlob(blob, "forbidden_fix", ff.ID, ff.Summary, "", terms); ok {
 			out = append(out, m)

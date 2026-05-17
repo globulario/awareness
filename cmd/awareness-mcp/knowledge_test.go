@@ -147,6 +147,110 @@ forbidden_fixes:
 	}
 }
 
+// ── Cross-link fields: related_principles, related_industry_patterns ─────────
+
+func TestSearchInvariants_RelatedPrinciplesSearchable(t *testing.T) {
+	p := writeYAML(t, "invariants.yaml", `
+invariants:
+  - id: ui.visible_state_requires_authority
+    title: Every visible UI state must be bound to an explicit authority
+    severity: critical
+    summary: A badge that shows state without binding to an authority is displaying guesswork.
+    related_principles:
+      - state.unknown_must_not_default_to_healthy
+      - evidence.missing_is_not_known_bad
+`)
+	entries := loadInvariants([]string{p})
+	if len(entries) == 0 {
+		t.Fatal("no invariants loaded")
+	}
+	if len(entries[0].RelatedPrinciples) == 0 {
+		t.Error("RelatedPrinciples not populated — yaml:'related_principles' tag not working")
+	}
+	// Search by a principle ID that only appears in related_principles.
+	hits := searchInvariants(entries, "state.unknown_must_not_default_to_healthy", 10)
+	if len(hits) == 0 {
+		t.Error("expected match on related_principles field, got none — related_principles: not being searched")
+	}
+}
+
+func TestSearchFailureModes_RelatedIndustryPatternsSearchable(t *testing.T) {
+	p := writeYAML(t, "failure_modes.yaml", `
+failure_modes:
+  - id: fm.globular.objectstore_partial_snapshot
+    title: Partial snapshot classifies absent nodes as known-down
+    severity: critical
+    summary: False quorum-loss finding from incomplete snapshot.
+    related_industry_patterns:
+      - fm.industry.missing_inventory_misclassified_as_down
+      - fm.industry.partial_failure_hidden_by_global_green
+    related_globular_failure_modes: []
+`)
+	entries := loadFailureModes([]string{p})
+	if len(entries) == 0 {
+		t.Fatal("no failure modes loaded")
+	}
+	if len(entries[0].RelatedIndustryPatterns) == 0 {
+		t.Error("RelatedIndustryPatterns not populated — yaml:'related_industry_patterns' tag not working")
+	}
+	// Search by an industry pattern ID that only appears in related_industry_patterns.
+	hits := searchFailureModes(entries, "missing_inventory_misclassified_as_down", 10)
+	if len(hits) == 0 {
+		t.Error("expected match on related_industry_patterns field, got none")
+	}
+}
+
+func TestSearchFailureModes_RelatedGlobularFMsSearchable(t *testing.T) {
+	p := writeYAML(t, "failure_modes.yaml", `
+failure_modes:
+  - id: fm.industry.missing_inventory_misclassified_as_down
+    title: Collector gap interpreted as known-down
+    severity: critical
+    summary: Absent NodeRecord is misclassified as proof of failure.
+    related_globular_failure_modes:
+      - fm.globular.objectstore_partial_snapshot
+`)
+	entries := loadFailureModes([]string{p})
+	if len(entries) == 0 {
+		t.Fatal("no failure modes loaded")
+	}
+	if len(entries[0].RelatedGlobularFMs) == 0 {
+		t.Error("RelatedGlobularFMs not populated — yaml:'related_globular_failure_modes' tag not working")
+	}
+	hits := searchFailureModes(entries, "objectstore_partial_snapshot", 10)
+	if len(hits) == 0 {
+		t.Error("expected match on related_globular_failure_modes field, got none")
+	}
+}
+
+func TestSearchForbiddenFixes_RelatedFailureModesSearchable(t *testing.T) {
+	p := writeYAML(t, "forbidden_fixes.yaml", `
+forbidden_fixes:
+  - id: forbidden.missing_inventory_as_down
+    summary: Treat missing inventory as known-down evidence.
+    safe_alternative: Use UNKNOWN bucket; only KNOWN_BAD counts toward severity.
+    related_failure_modes:
+      - fm.industry.missing_inventory_misclassified_as_down
+      - fm.globular.objectstore_partial_snapshot
+`)
+	fixes := loadForbiddenFixes([]string{p})
+	if len(fixes) == 0 {
+		t.Fatal("no forbidden fixes loaded")
+	}
+	if len(fixes[0].RelatedFailureModes) == 0 {
+		t.Error("RelatedFailureModes not populated — yaml:'related_failure_modes' tag not working")
+	}
+	// Search by a failure mode ID that only appears in related_failure_modes.
+	terms := knowledgeTerms("objectstore_partial_snapshot")
+	blob := strings.ToLower(strings.Join([]string{
+		fixes[0].ID, fixes[0].Summary, fixes[0].SafeAlternative,
+		strings.Join(fixes[0].RelatedFailureModes, " "),
+	}, " "))
+	if countMatches(blob, terms) == 0 {
+		t.Error("expected match on related_failure_modes, got none")
+	}
+}
+
 // ── Module-self format: ForbiddenFixEntry ──────────────────────────────────
 
 func TestLoadForbiddenFixes_ModuleSelfFormat(t *testing.T) {
