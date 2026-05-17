@@ -1441,3 +1441,129 @@ failure_modes:
         - TestComputeDesiredState_WildcardExcludesUnhealthy
         - TestComputeDesiredState_ControllerSRVOnlyHealthy
         - TestDoctorRule_DNSRecordsMatchRuntimeHealth
+
+    # ── Globular incident: objectstore partial snapshot ────────────────────────
+
+    - id: fm.globular.objectstore_partial_snapshot
+      title: Partial objectstore snapshot classifies absent nodes as known-down, firing false quorum-loss findings
+      severity: critical
+      # origin: { type: globular_incident, confidence: very_high }
+      symptoms:
+        - cluster-doctor fires objectstore.write_quorum_lost with active_drives=0 even though all MinIO nodes are running
+        - objectstore.minio.fingerprint_divergence fires for nodes that have actually rendered the correct topology
+        - Doctor report shows quorum loss immediately after a partial etcd read error
+        - Evidence shows data_incomplete=true alongside all pool nodes in the no_inventory bucket
+        - Restarting the cluster doctor makes the CRITICAL finding disappear without any MinIO change
+      root_cause: |
+        The snapshot collector could not reach one or more nodes — either a transient RPC error,
+        a pod restart, or a slow response that exceeded the collection window. The affected nodes'
+        inventory records are absent from the snapshot. Old code classified absent NodeRecord
+        entries as "known down" rather than "unknown", causing every pool node without an
+        inventory record to count against the write-quorum threshold. With all five pool nodes
+        absent (e.g., after a full collector failure), active_drives=0 < write_quorum=4 → CRITICAL.
+
+        The fix is captured in objectstore_physical_overlap.go (objectstore.write_quorum_lost):
+          - absent pool IP (no NodeRecord in snap.Nodes) → noInventory bucket
+          - absent inventory (nodeID known but snap.Inventories[id]=nil) → noInventory bucket
+          - stale inventory (age > InventoryStalenessThreshold) → noInventory bucket
+          - snap.DataIncomplete=true && len(knownDownNodes)==0 → suppress CRITICAL entirely
+        Only knownDownNodes (inventory present, unit state explicitly not-active) count toward quorum loss.
+
+        The same principle applies to objectstore.minio.fingerprint_divergence: when DataIncomplete=true,
+        missing fingerprints are suppressed; only actually diverged fingerprints (wrong value) fire.
+      architecture_fix: |
+        Any rule that evaluates cluster health from a snapshot must distinguish:
+          PRESENT      — evidence collected and confirms healthy
+          UNKNOWN      — evidence absent (collector gap, RPC error, timeout)
+          KNOWN_BAD    — evidence collected and confirms unhealthy
+
+        UNKNOWN must never be treated as KNOWN_BAD. This applies to objectstore quorum,
+        etcd member health, and any other rule that counts "down" members from an inventory.
+        Rules must read snap.DataIncomplete and suppress CRITICAL findings that would be
+        false positives if UNKNOWN nodes are actually healthy.
+      known_bad_fixes:
+        - Classify absent NodeRecord as knownDown — hides the ambiguity behind a false CRITICAL
+        - Ignore snap.DataIncomplete and always fire on insufficient active_drives
+        - Retry the snapshot read and fire the finding even on the first clean collection
+      related_invariants:
+        - objectstore.partial_snapshot_unknown_not_down
+      related_services:
+        - cluster-doctor
+        - cluster-controller
+      required_tests:
+        - TestWriteQuorumLost_PartialSnapshot_NoFalsePositive
+        - TestWriteQuorumLost_DataIncomplete_NoCritical
+        - TestFingerprintDivergence_DataIncomplete_SuppressesMissing
+        - TestObjectstoreQuorum_AbsentNodeIsUnknownNotDown
+        # Existing regression tests that already cover this:
+        - TestWriteQuorumLost_VIPHolder_NotMisclassifiedAsDown
+        - TestNodeIDByPoolIP_EmptyAdvertiseIpDoesNotPoison
+
+    # ── Globular incident: VIP transition cascades into etcd eviction ─────────
+
+    - id: fm.globular.vip_transition_cascade
+      title: keepalived VIP transition causes healthy etcd member eviction and control-plane instability
+      severity: critical
+      # origin: { type: globular_incident, confidence: very_high }
+      # source: failuregraph_seeds/vip_transition_evicts_etcd_member.yaml
+      #         failuregraph_seeds/vip_identity_poisoning_cross_layer.yaml
+      symptoms:
+        - Healthy etcd member exits cleanly (status=0) right after a keepalived/VIP spec change
+        - etcdctl member list shows an unstarted placeholder where the evicted node was
+        - "globular CLI fails: dial tcp <node>:2379 connection refused on the node whose etcd was evicted"
+        - cluster-doctor fires etcd.member_evicted or etcd.quorum_lost after a VIP failover
+        - node-agent fallback dials the wrong node (VIP holder instead of target node)
+        - Controller leader election misbehaves when VIP is the first routable IP
+        - ScyllaDB or MinIO endpoint lists include the floating VIP, causing connection failures when VIP moves
+      root_cause: |
+        PrimaryIP() returns the keepalived floating VIP when a node holds it (because the VIP is
+        the first non-loopback interface). This VIP leaks into:
+          1. etcd member advertise/listen URLs (written at join time by install-day1.sh)
+          2. removeStaleMembers desiredPeerURLs (controller reads node.PrimaryIP and builds the URL set)
+          3. ScyllaDB hosts list (publishScyllaHostsIfNeeded)
+          4. MinIO pool IPs (objectstore topology)
+          5. Node-agent fallback endpoint selection
+          6. Controller leader/self IP matching
+
+        When the VIP moves from node A to node B during a keepalived change, the peer URLs
+        for node A no longer match its etcd member record (the VIP is now on B). The controller's
+        removeStaleMembers loop sees a mismatch, classifies node A's member as stale, and removes it.
+        If node A also uses a legacy bootstrap member name ("globular-etcd" instead of sanitized
+        hostname), the hostname fallback in removeStaleMembers also fails to protect it.
+      architecture_fix: |
+        All member-identity-requiring services must use StableIP(clusterVIP) — not PrimaryIP().
+        StableIP excludes the floating VIP by filtering it from the IP list before selecting
+        the representative address. The VIP is read from /globular/ingress/v1/spec vip_failover.vip.
+
+        Affected surfaces that must be patched:
+          1. install-day1.sh: NODE_IP selection must exclude VIP when ingress mode is vip_failover
+          2. etcd member advertise/listen URLs: use StableIP(clusterVIP)
+          3. ScyllaDB host list: use StableIP(clusterVIP) in publishScyllaHostsIfNeeded
+          4. MinIO pool IPs: use StableIP(clusterVIP) in objectstore topology
+          5. node_agent_endpoint_fallback.go: do not prefer PrimaryIP when VIP is known
+          6. Controller leader/self matching: use VIP-aware comparison
+
+        Pre-emptive: rename legacy "globular-etcd" etcd member to sanitized hostname before
+        any VIP/keepalived change, so the hostname fallback in removeStaleMembers protects it.
+      known_bad_fixes:
+        - Adding VIP to etcd member advertise URLs (doubles the identity poisoning)
+        - Restarting keepalived/etcd without repairing the identity source selection
+        - Disabling TLS to hide VIP/SAN mismatch
+        - Manually editing one node's etcd.yaml without fixing the upstream render logic
+        - Re-running the join script with --repair-etcd without renaming the legacy member first
+      related_invariants:
+        - ops.vip_requires_observed_owner
+        - network.no_loopback_escape_for_cluster_identity
+      related_services:
+        - cluster-controller
+        - cluster-doctor
+        - node-agent
+      required_tests:
+        - TestRemoveStaleMembers_VIPHolder_NotEvicted
+        - TestEtcdAdvertiseURL_UsesStableIP_NotVIP
+        - TestScyllaHosts_ExcludeVIP
+        - TestNodeAgentFallback_NeverReturnsVIP
+        - TestControllerLeaderMatch_VIPAware
+        # Existing regression tests already covering this:
+        - TestWriteQuorumLost_VIPHolder_NotMisclassifiedAsDown
+        - TestNodeIDByPoolIP_EmptyAdvertiseIpDoesNotPoison
