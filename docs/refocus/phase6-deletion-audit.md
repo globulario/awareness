@@ -53,8 +53,7 @@ Deletion criteria not met. Leave in place.
 | `semantic/` | 6 | HAS_CALLERS |
 | `sessionoracle/` | 4 | HAS_CALLERS |
 
-**graph/db.go (SQLite):** 92+ production callers. Removing SQLite from services requires replacing
-the graph store across all callers — this is a major future project, not Phase 6 scope.
+**graph/ (JSON, migration complete):** `db.go` was removed in commit `0e4ceb8`. The graph package is now JSON-backed (`store.go` + `store_json.go`). No `database/sql` or SQLite import in any awareness package. The 92+ callers were migrated as part of this work.
 
 ---
 
@@ -94,13 +93,12 @@ migration project replaces their callers one by one.
 
 ---
 
-## Future Deletion Path (Post-Refocus)
+## Future Work (Post-Refocus)
 
-If future work wants to remove SQLite from services, the required steps are:
-1. Replace `graph.Graph` with the lean JSON graph in each of the 92 callers
-2. Migrate `incidentpattern/store.go` to YAML-backed storage
-3. Migrate `failuregraph/` SQLite seeder to use the lean YAML loader
-4. Remove `graph/db.go` after all callers are gone
-5. Run full services test suite
+SQLite removal is complete. Remaining evolutionary work if needed:
 
-This is a separate project estimated at 3–5 sprints.
+1. Move `fixledger/` loader to standalone `knowledge/` (no blockers — YAML-only, no Globular deps)
+2. Migrate `evidence/` from standalone repo to services (has Globular-specific paths hardcoded)
+3. Trim `preflight/contextnav_adapter.go` stub (7 lines, noop)
+
+None of these are urgent. All high-value knowledge is preserved.

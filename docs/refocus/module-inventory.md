@@ -1,7 +1,14 @@
 # Module Inventory — Lean Awareness Refocus
 
-**Date:** 2026-05-16  
+**Date:** 2026-05-16 (updated 2026-05-17 — post-migration accuracy pass)  
 **Phase:** 1 — Inventory only. No code changes.
+
+> **2026-05-17 update:** The SQLite graph migration (commit `0e4ceb8 lean: remove SQLite graph`)
+> completed before this document was revised. All references below to `graph/db.go (SQLite)` are
+> historical. The `graph/` package in services is now JSON-backed (`store.go` + `store_json.go`,
+> no `database/sql` import). `failuregraph/`, `incidentpattern/`, and `sessionoracle/` all use
+> JSON file persistence. The "Future Deletion Path" in `phase6-deletion-audit.md` for SQLite
+> removal is no longer needed. All six phases of the lean refocus are complete.
 
 ## Classification Key
 
@@ -47,29 +54,29 @@ The standalone repo is already lean. It is the target architecture.
 
 This is the large repo. 340+ Go files across 40+ packages.
 
-The central dependency is `graph/db.go` (SQLite via `mattn/go-sqlite3`). Nearly every high-value package depends on it. The migration path is to decouple knowledge from the graph DB, moving knowledge to YAML and logic to simple in-memory matchers.
+**SQLite has been removed.** The graph package (`store.go` + `store_json.go`) is now backed by in-memory maps with JSON file persistence. No `database/sql` or `mattn/go-sqlite3` import exists in any awareness package. The migration is complete.
 
-### `graph/` — SQLite Knowledge Graph Engine
+### `graph/` — JSON Knowledge Graph Engine *(was SQLite; migration complete)*
 
 | Attribute | Value |
 |-----------|-------|
-| **Classification** | SHRINK → eventually LEGACY in standalone |
-| **Imports** | `mattn/go-sqlite3`, `database/sql`, `uuid`, stdlib |
+| **Classification** | KEEP_SERVICES |
+| **Imports** | `sync`, `encoding/json`, `os`, `path/filepath`, `uuid`, stdlib — no SQLite |
 | **Daily use** | Used by: `incidentpattern`, `failuregraph`, `assurance`, `selfcheck`, `preflight`, `analysis`, `semantic`, `integrity`, `contextfreshness`, `sessionoracle`, `checkedit` |
 | **Risk if removed** | Critical — everything else breaks |
-| **Replacement path** | Standalone already has a JSON-based `graph/` package. The migration is to move knowledge out of SQLite into YAML seed files, rebuild matchers over YAML + in-memory index, retire the SQLite graph for standalone use. |
-| **Notes** | `db.go` is 1000+ lines. This is the monster. Keep in services for production live-cluster graph traversal. Do NOT move to standalone. |
+| **Replacement path** | Already the lean design. JSON-backed, in-memory maps, no DB dependency. No further migration needed. |
+| **Notes** | `store.go` + `store_json.go` are the JSON persistence layer (split in commit `b73d0f05`). Migration complete. Do NOT move to standalone — Globular graph traversal is services-specific. |
 
 ### `failuregraph/` — Failure Knowledge Graph
 
 | Attribute | Value |
 |-----------|-------|
-| **Classification** | SHRINK (YAML seeds = PRESERVE, Go SQLite code = reduce) |
-| **Imports** | `graph/` (SQLite), stdlib |
+| **Classification** | KEEP_SERVICES |
+| **Imports** | `graph/` (JSON-backed), `uuid`, stdlib |
 | **Daily use** | Used by MCP error matching, preflight warning |
 | **Risk if removed** | High — failure knowledge is core Awareness value |
-| **Replacement path** | The `seeds/*.yaml` files contain real incident knowledge (9 seed files covering real production failures). These MUST be preserved. Phase 2 should migrate seeds to `.awareness/failure_modes.yaml` format. The Go SQLite loader can eventually be replaced by a simple YAML loader. |
-| **Notes** | **Seeds are high-value production knowledge. Do not delete.** YAML seeds: `empty_advertise_ip_misclassifies_node`, `empty_store_result_deserialization`, `endpoint_identity_scope_violation`, `installed_state_build_id_missing`, `legacy_authority_path_still_called`, `topology_gated_package_false_drift`, `vip_used_as_member_endpoint`, `workflow_blocked_reason_unclassified`, `workflow_resume_without_receipt`. |
+| **Replacement path** | Seeds already preserved in `.awareness/failure_modes.yaml` (Phase 2 complete). The Go JSON store is the lean design — no further migration needed. |
+| **Notes** | **Seeds are high-value production knowledge.** 9 YAML seeds cover known Globular incidents. Phase 2 migrated them to `.awareness/failure_modes.yaml`. The store is JSON-backed. |
 
 ### `incidentpattern/` — Incident Pattern Matching
 
@@ -388,14 +395,13 @@ grep -R "github.com/globulario/services" . --include="*.go"
 # Expected: no output ✓
 ```
 
-### Services repo — SQLite dependency
+### Services repo — No awareness SQLite dependency (migration complete)
 
 ```bash
-grep -R "mattn/go-sqlite3" . --include="*.go"
-# Expected: only in graph/db.go
+grep -R "mattn/go-sqlite3" awareness/ --include="*.go"
+# Expected: no output — SQLite removed from all awareness packages ✓
+# (mattn/go-sqlite3 remains in golang/sql/ and golang/persistence/ — unrelated)
 ```
-
-Services legitimately depends on SQLite (graph DB). This is acceptable for services.
 
 ### Standalone must never acquire these imports:
 
@@ -403,7 +409,7 @@ Services legitimately depends on SQLite (graph DB). This is acceptable for servi
 github.com/globulario/services/...
 mattn/go-sqlite3
 modernc.org/sqlite
-database/sql (if backing SQLite)
+database/sql
 etcd
 grpc (Globular protos)
 ```
