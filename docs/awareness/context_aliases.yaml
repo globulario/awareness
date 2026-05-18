@@ -145,3 +145,49 @@ aliases:
     - /globular/objectstore/config missing
     - MinIO topology missing
     - node-agent inferred objectstore topology
+
+  ui.partial_update_preserves_screen_context:
+    - page reload
+    - full screen refresh
+    - location.reload
+    - router.refresh
+    - data holder refresh
+    - partial refresh
+    - reload to fix state
+
+  ui.dom_event_contract_must_be_typed_and_scoped:
+    - CustomEvent
+    - dispatchEvent
+    - addEventListener
+    - browser event
+    - component event
+    - event detail
+    - DOM event bus
+    - untyped event
+
+  ui.async_result_must_not_overwrite_newer_state:
+    - stale response
+    - late response
+    - request generation
+    - abort controller
+    - correlation id
+    - race condition
+    - concurrent requests
+
+  ui.subscription_lifecycle_must_be_owned:
+    - listener leak
+    - subscription cleanup
+    - useEffect cleanup
+    - unmount cleanup
+    - polling loop
+    - stale subscription
+
+  ui.cache_invalidation_must_follow_authority_generation:
+    - client cache
+    - browser cache
+    - local store
+    - component cache
+    - stale cache
+    - generation invalidation
+    - cache TTL
+    - cache expired

@@ -1986,3 +1986,316 @@ forbidden_fixes:
     a terminal state (SUCCEEDED / FAILED / BLOCKED) is observed. Report
     that terminal state to the operator. For destructive or irreversible
     operations, require explicit confirmation before dispatch — not after.
+
+# ── Frontend execution mechanics forbidden fixes ──────────────────────────────
+
+- id: ui.fix.full_page_reload_for_local_state_change
+  summary: |
+    Trigger a full page reload (location.reload(), router.refresh(), window.location = ...)
+    to resolve a local state inconsistency that could be fixed by targeted state update
+    or data-holder refresh.
+  related_invariants:
+    - ui.partial_update_preserves_screen_context
+  safe_alternative: |
+    Identify the specific component or data holder that needs refreshing and refresh only
+    that scope. If the state bug requires a full reload to hide itself, fix the state bug.
+
+- id: ui.fix.refresh_screen_to_hide_state_bug
+  summary: |
+    Use a full-page or full-screen refresh to mask a state management bug instead of
+    fixing the state inconsistency at its root.
+  related_invariants:
+    - ui.partial_update_preserves_screen_context
+  safe_alternative: |
+    Identify and fix the underlying state management issue. A component should manage
+    its own state cleanly enough that a reload is never required for correctness.
+
+- id: ui.fix.global_event_bus_without_contract
+  summary: |
+    Use DOM CustomEvent, dispatchEvent, or window.addEventListener as an undocumented
+    global event bus with generic event names (refresh, update, changed, reloadEverything).
+  related_invariants:
+    - ui.dom_event_contract_must_be_typed_and_scoped
+  safe_alternative: |
+    Namespace all events (e.g., globular:service-runtime-updated), define the payload
+    shape, and document the producer and consumers. Handle malformed payloads gracefully.
+
+- id: ui.fix.untyped_custom_event_payload
+  summary: |
+    Dispatch a CustomEvent with an untyped or schema-less payload that consumers
+    interpret without validation.
+  related_invariants:
+    - ui.dom_event_contract_must_be_typed_and_scoped
+  safe_alternative: |
+    Define the event detail type. Validate the payload on the consumer side and
+    ignore malformed events rather than applying them to state.
+
+- id: ui.fix.event_detail_as_backend_truth
+  summary: |
+    Treat the detail field of a frontend DOM event as authoritative backend state
+    (runtime health, installed version, permission result, or topology truth).
+  related_invariants:
+    - ui.dom_event_contract_must_be_typed_and_scoped
+    - ui.data_holder_is_cache_not_authority
+  safe_alternative: |
+    DOM event detail is a cache invalidation signal, not a backend truth delivery
+    mechanism. Use the event to trigger a re-fetch from backend authority, not to
+    write authoritative state directly.
+
+- id: ui.fix.data_holder_as_status_authority
+  summary: |
+    Treat a DOM element's dataset, a component store entry, or a frontend singleton
+    as the authoritative source of backend-owned state (runtime health, installed
+    version, desired state, permission result).
+  related_invariants:
+    - ui.data_holder_is_cache_not_authority
+  safe_alternative: |
+    Data holders are caches. When a backend event arrives or a polling interval
+    fires, re-fetch from backend authority and update the cache. The cache is a
+    render convenience, not a source of truth.
+
+- id: ui.fix.dom_dataset_as_backend_truth
+  summary: |
+    Read data-* attributes on DOM elements to determine backend operational state
+    (service status, workflow result, permission, node health).
+  related_invariants:
+    - ui.data_holder_is_cache_not_authority
+  safe_alternative: |
+    DOM data attributes are for rendering hints and accessibility annotations.
+    Backend state must be sourced from an explicit data-fetch, RPC, or subscription
+    whose origin is the backend authority.
+
+- id: ui.fix.accept_last_arriving_response_as_latest
+  summary: |
+    Write all async responses to state in arrival order without checking whether a
+    newer request has already superseded the arriving response.
+  related_invariants:
+    - ui.async_result_must_not_overwrite_newer_state
+  safe_alternative: |
+    Use AbortController, request generation counters, or resource revision checks
+    to discard responses that arrive after a newer request has been issued.
+
+- id: ui.fix.no_abort_or_generation_for_concurrent_requests
+  summary: |
+    Issue concurrent requests against the same target state without any mechanism
+    to detect or discard late-arriving responses.
+  related_invariants:
+    - ui.async_result_must_not_overwrite_newer_state
+  safe_alternative: |
+    Before issuing a new request for a target, abort any pending request for the
+    same target using AbortController, or track a generation counter and discard
+    responses with stale generation numbers.
+
+- id: ui.fix.listener_without_cleanup
+  summary: |
+    Register an event listener, subscription, stream, timer, or polling loop
+    without a matching cleanup path that removes it on component unmount or scope end.
+  related_invariants:
+    - ui.subscription_lifecycle_must_be_owned
+  safe_alternative: |
+    Every registration must have a corresponding deregistration. In React: return
+    cleanup from useEffect. In Vue: clean up in onUnmounted. In web components:
+    clean up in disconnectedCallback.
+
+- id: ui.fix.polling_loop_survives_component_unmount
+  summary: |
+    Leave a setInterval, setTimeout loop, or polling subscription running after
+    the component that started it has unmounted or navigated away.
+  related_invariants:
+    - ui.subscription_lifecycle_must_be_owned
+  safe_alternative: |
+    Store the interval/timeout ID and clear it in the component teardown hook.
+    Use AbortController or a mounted flag to prevent state mutations from resolved
+    polls after unmount.
+
+- id: ui.fix.stale_subscription_updates_new_screen
+  summary: |
+    Allow a subscription opened for screen A to deliver state updates to screen B
+    after navigation, because the subscription was not cleaned up before the route
+    changed.
+  related_invariants:
+    - ui.subscription_lifecycle_must_be_owned
+  safe_alternative: |
+    Tie subscription lifecycle to the component lifecycle. When navigating away,
+    close all subscriptions opened for the previous screen before opening new ones.
+
+- id: ui.fix.list_key_uses_array_index
+  summary: |
+    Use an array index (0, 1, 2, ...) as the React/Vue/Svelte key for dynamic list
+    items that can reorder, filter, sort, or receive real-time updates.
+  related_invariants:
+    - ui.list_identity_must_use_backend_id
+  safe_alternative: |
+    Use stable backend identity (service_id, node_id, workflow_run_id, etc.) as
+    the list key. Array indices produce incorrect behavior when the list reorders
+    because frameworks reuse component instances by key position.
+
+- id: ui.fix.display_name_as_identity
+  summary: |
+    Use a display name, translated label, or human-readable string as the identity
+    key for list rows, selected state, or route params when a stable backend ID exists.
+  related_invariants:
+    - ui.list_identity_must_use_backend_id
+  safe_alternative: |
+    Use the backend-assigned stable ID as the key. Display names change (translation,
+    rename, re-label) and must not be used as identity.
+
+- id: ui.fix.spinner_hides_backend_failure
+  summary: |
+    Show an infinite loading spinner when a backend request has failed, hiding the
+    failure behind a "still loading" appearance.
+  related_invariants:
+    - ui.empty_loading_unknown_failed_are_distinct
+  safe_alternative: |
+    Distinguish the loading state from the error state. When a request fails, render
+    the failure with the backend error reason — not a permanent spinner.
+
+- id: ui.fix.empty_state_hides_permission_denied
+  summary: |
+    Render an empty list or empty result when the backend returned PERMISSION_DENIED,
+    making permission denial look like an absence of data.
+  related_invariants:
+    - ui.empty_loading_unknown_failed_are_distinct
+    - ui.action_requires_permission_contract
+  safe_alternative: |
+    Check for PERMISSION_DENIED and render a distinct "not authorized" state. An empty
+    list means zero results from an authorized query, not a denied query.
+
+- id: ui.fix.unknown_rendered_as_empty_success
+  summary: |
+    Render an empty success state or healthy status when the authority has not yet
+    been established or the collection is incomplete.
+  related_invariants:
+    - ui.empty_loading_unknown_failed_are_distinct
+    - ui.visible_state_requires_authority
+  safe_alternative: |
+    Show the unknown or not-yet-established state explicitly. Empty success requires
+    a positive authoritative response confirming zero results — not the absence of
+    a response.
+
+- id: ui.fix.double_submit_starts_duplicate_workflow
+  summary: |
+    Allow a second form submission to reach the backend while the first is still
+    in flight, potentially creating duplicate workflows or duplicate state mutations.
+  related_invariants:
+    - ui.form_submit_must_be_idempotent_or_singleflight
+  safe_alternative: |
+    Disable the submit button and all form inputs while the request is in flight.
+    Re-enable only on terminal response (success or error). For retry scenarios,
+    reuse the same idempotency key.
+
+- id: ui.fix.retry_creates_new_mutation_without_idempotency_key
+  summary: |
+    Retry a failed mutating request by creating a fresh request with a new operation
+    identity, rather than reusing the original idempotency key or checking whether
+    the original succeeded.
+  related_invariants:
+    - ui.form_submit_must_be_idempotent_or_singleflight
+  safe_alternative: |
+    On retry, reuse the same idempotency key as the original request if the backend
+    supports it. If not, check whether the original operation succeeded before
+    retrying, or make the operation idempotent at the backend level.
+
+- id: ui.fix.operational_context_lost_on_navigation
+  summary: |
+    Store operationally relevant screen context (selected node, workflow run,
+    resource, filter, time range) only in ephemeral component state, so it is
+    lost when the user navigates away, reloads, or shares the URL.
+  related_invariants:
+    - ui.navigation_state_must_be_shareable_when_operationally_relevant
+  safe_alternative: |
+    Persist operationally relevant selection in route params or query params.
+    If sharing is undesirable, use durable local storage. Ephemeral state is
+    appropriate only for transient UI interactions (hover state, tooltip, drag).
+
+- id: ui.fix.selected_resource_only_in_ephemeral_state
+  summary: |
+    Store the selected service, node, workflow run, or resource identity only in
+    component state, losing it on every navigation or page reload.
+  related_invariants:
+    - ui.navigation_state_must_be_shareable_when_operationally_relevant
+  safe_alternative: |
+    Encode resource identity in the URL route or query param so the selection
+    survives reload and can be bookmarked or shared.
+
+- id: ui.fix.color_only_status
+  summary: |
+    Communicate operational status (healthy, degraded, failed, denied, warning)
+    using only color differences, with no text, icon label, or aria attribute to
+    carry the same meaning.
+  related_invariants:
+    - ui.accessibility_must_preserve_operational_meaning
+  safe_alternative: |
+    Use text labels or aria-label in addition to color. Color alone fails colorblind
+    users and screen readers.
+
+- id: ui.fix.warning_only_visible_on_hover
+  summary: |
+    Place a critical warning, degraded reason, or destructive-action risk inside
+    a hover tooltip so it is inaccessible to keyboard and screen-reader users.
+  related_invariants:
+    - ui.accessibility_must_preserve_operational_meaning
+    - ui.dangerous_warning_must_remain_visible
+  safe_alternative: |
+    Render critical warnings in the visible DOM. Tooltips may supplement context
+    but must not be the only access point for safety-critical information.
+
+- id: ui.fix.disabled_button_without_reason
+  summary: |
+    Disable an action button without telling the operator why it is disabled,
+    making it impossible to understand what prerequisite is missing.
+  related_invariants:
+    - ui.accessibility_must_preserve_operational_meaning
+    - ui.action_requires_permission_contract
+  safe_alternative: |
+    Show the reason for the disabled state: "Requires admin permission", "Install
+    in progress", "Quorum insufficient". A disabled button without a reason is
+    an invisible wall.
+
+- id: ui.fix.time_only_cache_for_operator_state
+  summary: |
+    Expire a frontend cache for operator-critical state (runtime health, installed
+    version, permissions, topology) using only a time-to-live, without tying
+    invalidation to backend authority generation or version.
+  related_invariants:
+    - ui.cache_invalidation_must_follow_authority_generation
+  safe_alternative: |
+    Include the authority generation, resource revision, or version in the cache
+    key or cache entry. Invalidate when the generation changes, not only when
+    a timer fires.
+
+- id: ui.fix.cache_not_invalidated_on_backend_generation_change
+  summary: |
+    Serve a cached value after the backend generation, resource revision, or
+    version has changed, because the cache invalidation logic does not observe
+    backend authority changes.
+  related_invariants:
+    - ui.cache_invalidation_must_follow_authority_generation
+  safe_alternative: |
+    Subscribe to backend generation change events or include the generation in
+    the cache key. When the generation changes, invalidate all entries derived
+    from that generation.
+
+- id: ui.fix.error_boundary_blanks_operator_context
+  summary: |
+    Render a full-screen error boundary fallback that removes all context from
+    the operator: selected resource identity, visible warnings, last-known
+    timestamp, and navigation links.
+  related_invariants:
+    - ui.error_boundary_must_preserve_diagnostic_context
+  safe_alternative: |
+    Scope error boundaries to the failing component. The fallback should show
+    which component failed, preserve resource identity in the URL, and offer
+    a safe retry or back-navigation path.
+
+- id: ui.fix.error_boundary_hides_critical_warning
+  summary: |
+    Render an error boundary fallback that replaces or hides a visible critical
+    warning, degraded reason, or blocked reason that was already rendered.
+  related_invariants:
+    - ui.error_boundary_must_preserve_diagnostic_context
+    - ui.dangerous_warning_must_remain_visible
+  safe_alternative: |
+    Preserve critical warning state outside the failed component boundary.
+    Warning state should be held at a scope that survives partial component
+    failures, not inside the component that failed.

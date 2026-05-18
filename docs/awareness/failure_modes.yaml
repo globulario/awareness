@@ -1567,3 +1567,247 @@ failure_modes:
         # Existing regression tests already covering this:
         - TestWriteQuorumLost_VIPHolder_NotMisclassifiedAsDown
         - TestNodeIDByPoolIP_EmptyAdvertiseIpDoesNotPoison
+
+    # ── Frontend execution mechanics failure modes ────────────────────────────
+
+    - id: fm.ui.full_page_reload_masks_state_bug
+      title: Full page reload masks a local state management bug
+      severity: high
+      symptoms:
+        - location.reload() or router.refresh() is used to fix a UI inconsistency
+        - removing the reload exposes stale state or component desync
+        - expanded panels, selected nodes, filters, or scroll position reset on every operation
+      root_cause: |
+        A local state inconsistency was masked by a full page reload instead of being fixed
+        at the source. The reload hides the bug by discarding all in-memory state, destroying
+        operator context in the process.
+      architecture_fix: |
+        Fix the state management bug. Identify the specific component or data holder that
+        becomes inconsistent and refresh only that scope. Full reloads must not be used
+        as a correctness shortcut.
+      forbidden_fixes:
+        - ui.fix.full_page_reload_for_local_state_change
+        - ui.fix.refresh_screen_to_hide_state_bug
+      related_invariants:
+        - ui.partial_update_preserves_screen_context
+
+    - id: fm.ui.untyped_dom_event_causes_wrong_refresh
+      title: Untyped or unscoped DOM event triggers wrong component refresh
+      severity: high
+      symptoms:
+        - a "refresh" or "update" event causes an unrelated panel to reload
+        - event payload applied to state without validation, corrupting it
+        - multiple components refresh when only one was intended
+      root_cause: |
+        A DOM event was dispatched without a namespaced name or typed payload contract.
+        Multiple consumers respond to the same generic event name with different
+        interpretations of the payload, or the payload is malformed but not guarded.
+      architecture_fix: |
+        Namespace all DOM events and define their payload shape. Consumers must validate
+        the payload before applying it to state. Event detail must not be treated as
+        backend truth.
+      forbidden_fixes:
+        - ui.fix.global_event_bus_without_contract
+        - ui.fix.untyped_custom_event_payload
+        - ui.fix.event_detail_as_backend_truth
+      related_invariants:
+        - ui.dom_event_contract_must_be_typed_and_scoped
+
+    - id: fm.ui.data_holder_becomes_authority
+      title: Data-holder element becomes authoritative source for backend-owned state
+      severity: critical
+      symptoms:
+        - UI shows stale runtime status, installed version, or permission result from a data-holder
+        - removing or reloading the data-holder reveals a different backend state
+        - a data-* attribute, component store entry, or singleton contains fields only backend authority should own
+      root_cause: |
+        A data-holder element was used as a write-through cache for backend-owned state, but
+        the frontend began reading from the cache without re-fetching from authority. The cache
+        became the de facto source of truth.
+      architecture_fix: |
+        Separate UI-only state (selection, expansion, draft) from backend-authoritative state.
+        Backend-authoritative fields must always be sourced from an explicit fetch or
+        subscription to backend authority. The data-holder is a rendering mirror, not a
+        source of truth.
+      forbidden_fixes:
+        - ui.fix.data_holder_as_status_authority
+        - ui.fix.dom_dataset_as_backend_truth
+      related_invariants:
+        - ui.data_holder_is_cache_not_authority
+        - ui.visible_state_requires_authority
+
+    - id: fm.ui.stale_async_response_reverts_state
+      title: Late async response overwrites newer UI state
+      severity: high
+      symptoms:
+        - UI briefly shows a newer state then reverts to an older state
+        - rapid user actions (click → click) leave the UI in the state from the first action
+        - a slow network response arrives after a faster retry and overwrites the retry result
+      root_cause: |
+        A slow async response arrived after a newer request had already updated state. The
+        component applied the slow response without checking whether it was still current,
+        reverting the UI to a stale state.
+      architecture_fix: |
+        Use AbortController to cancel pending requests when a new one is issued for the same
+        target, or use a request generation counter and discard responses with generation
+        numbers below the current one.
+      forbidden_fixes:
+        - ui.fix.accept_last_arriving_response_as_latest
+        - ui.fix.no_abort_or_generation_for_concurrent_requests
+      related_invariants:
+        - ui.async_result_must_not_overwrite_newer_state
+
+    - id: fm.ui.listener_leak_duplicates_refresh
+      title: Leaked listener or subscription causes duplicate state updates or stale mutation after unmount
+      severity: high
+      symptoms:
+        - a panel or component refreshes twice on every data change
+        - state is mutated after navigating away from a screen
+        - memory usage grows over time as the user navigates between views
+        - event handler fires after the component that registered it was removed
+      root_cause: |
+        A listener, subscription, stream, timer, or polling loop was registered but not
+        cleaned up when the owning component unmounted or the scope ended. The leaked
+        registration continues delivering updates to state that may belong to a different
+        screen.
+      architecture_fix: |
+        Every registration must have a matching deregistration in the component teardown
+        path. Use useEffect return cleanups in React, onUnmounted in Vue, and
+        disconnectedCallback in web components. Test unmount behavior explicitly.
+      forbidden_fixes:
+        - ui.fix.listener_without_cleanup
+        - ui.fix.polling_loop_survives_component_unmount
+        - ui.fix.stale_subscription_updates_new_screen
+      related_invariants:
+        - ui.subscription_lifecycle_must_be_owned
+
+    - id: fm.ui.index_key_moves_row_state
+      title: Array index as list key moves component state to wrong row after reorder
+      severity: high
+      symptoms:
+        - expanded row state jumps to a different item after sorting or filtering
+        - inline edit content appears in the wrong row after a reorder
+        - selection indicator is on the wrong item after a list update
+      root_cause: |
+        List rows were keyed by array index. When the list reordered (sort, filter, drag,
+        real-time update), the framework reused component instances by position rather than
+        identity, moving state from item A to the position now occupied by item B.
+      architecture_fix: |
+        Use stable backend identity (service_id, node_id, workflow_run_id, etc.) as the
+        list key. Backend IDs survive reorder; array positions do not.
+      forbidden_fixes:
+        - ui.fix.list_key_uses_array_index
+        - ui.fix.display_name_as_identity
+      related_invariants:
+        - ui.list_identity_must_use_backend_id
+
+    - id: fm.ui.permission_denied_rendered_as_empty
+      title: Permission denied renders as empty list, hiding authorization failure
+      severity: high
+      symptoms:
+        - a user sees an empty list where data exists for other users
+        - removing the RBAC restriction makes the list populate
+        - no error message or denied indicator is shown
+      root_cause: |
+        A PERMISSION_DENIED backend response was treated as an empty-result response in the
+        error handling path. The UI rendered the empty state instead of an authorization
+        denial message.
+      architecture_fix: |
+        Map PERMISSION_DENIED distinctly from empty results. Show a "not authorized" state
+        with the backend reason when permission is denied. Empty results require a positive
+        authorized response confirming zero items.
+      forbidden_fixes:
+        - ui.fix.empty_state_hides_permission_denied
+      related_invariants:
+        - ui.empty_loading_unknown_failed_are_distinct
+        - ui.action_requires_permission_contract
+      related_failure_modes:
+        - fm.industry.permission_denied_rendered_as_network_error
+
+    - id: fm.ui.double_submit_creates_duplicate_mutation
+      title: Double-click or network retry creates duplicate workflow or duplicate backend mutation
+      severity: high
+      symptoms:
+        - two workflows appear in the workflow list after one user action
+        - a single install or approve action creates two backend records
+        - retry button creates a new operation instead of reusing the original
+      root_cause: |
+        The submit action was not guarded against concurrent invocations. A double-click,
+        an Enter-key repeat, or a network retry created a second request before the first
+        had completed.
+      architecture_fix: |
+        Disable the submit control while a request is in flight. Re-enable only on terminal
+        response. For retry scenarios, reuse the original idempotency key or verify the
+        first request outcome before retrying.
+      forbidden_fixes:
+        - ui.fix.double_submit_starts_duplicate_workflow
+        - ui.fix.retry_creates_new_mutation_without_idempotency_key
+      related_invariants:
+        - ui.form_submit_must_be_idempotent_or_singleflight
+
+    - id: fm.ui.time_only_cache_hides_backend_change
+      title: Time-only frontend cache hides backend authority change from the operator
+      severity: high
+      symptoms:
+        - UI shows stale runtime status, permissions, or installed version after a backend change
+        - the cache expires eventually and the UI updates, but the operator may have acted on stale data
+        - invalidating the frontend cache manually reveals a different backend state
+      root_cause: |
+        A frontend cache was set to expire by time (TTL) only. The backend authority changed
+        (generation incremented, version upgraded, permission revoked) before the TTL elapsed,
+        but the cache continued serving the old value.
+      architecture_fix: |
+        Include the backend authority generation, resource revision, or version in the cache
+        key or cache entry metadata. Subscribe to backend change events to trigger immediate
+        invalidation when the authority changes.
+      forbidden_fixes:
+        - ui.fix.time_only_cache_for_operator_state
+        - ui.fix.cache_not_invalidated_on_backend_generation_change
+      related_invariants:
+        - ui.cache_invalidation_must_follow_authority_generation
+        - ui.status_freshness_must_be_surfaced
+      related_failure_modes:
+        - fm.industry.stale_cache_served_as_live_state
+
+    - id: fm.ui.operational_context_lost_on_navigation
+      title: Operator loses diagnostic context on navigation or reload
+      severity: medium
+      symptoms:
+        - selected node/service/workflow resets to default on navigation
+        - sharing a URL takes the recipient to the default view, not the shared context
+        - the operator must re-navigate to the same resource after a reload
+      root_cause: |
+        Operationally relevant selection state (node, service, workflow run, filter, tab, time
+        range) was stored only in ephemeral component state. Navigation or reload destroyed it.
+      architecture_fix: |
+        Encode operationally relevant selection in the URL route or query params. Use durable
+        local storage for persistence that should not be shared. Ephemeral component state is
+        appropriate only for transient UI behavior.
+      forbidden_fixes:
+        - ui.fix.operational_context_lost_on_navigation
+        - ui.fix.selected_resource_only_in_ephemeral_state
+      related_invariants:
+        - ui.navigation_state_must_be_shareable_when_operationally_relevant
+
+    - id: fm.ui.error_boundary_loses_diagnostic_context
+      title: Error boundary blanks operator screen, losing diagnostic context
+      severity: high
+      symptoms:
+        - a rendering error replaces the entire screen with a generic error page
+        - selected resource identity, visible warnings, and last-known timestamp are gone
+        - no retry or back-navigation path is offered
+        - a critical warning that was visible before the error is no longer visible
+      root_cause: |
+        The error boundary scope covered too large a region. A single component failure
+        caused the entire operator view to be replaced by the fallback, discarding all
+        context the operator had established.
+      architecture_fix: |
+        Scope error boundaries to the failing component or panel. The fallback must preserve
+        resource identity in the URL, show which component failed, and offer a safe retry.
+        Critical warning state must be held outside the scope of potentially failing components.
+      forbidden_fixes:
+        - ui.fix.error_boundary_blanks_operator_context
+        - ui.fix.error_boundary_hides_critical_warning
+      related_invariants:
+        - ui.error_boundary_must_preserve_diagnostic_context
+        - ui.dangerous_warning_must_remain_visible

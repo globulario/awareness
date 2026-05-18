@@ -66,3 +66,216 @@ forbidden_fixes:
       AI says approved/successful/healthy/complete without backend state
       AI fabricates required action or defer_until
     applies_when: UI uses AI explanations, generated summaries, assistant panels, workflow clerks, or humorous bureaucratic narration.
+
+  - id: ui.fix.full_page_reload_for_local_state_change
+    summary: Do not use location.reload(), router.refresh(), or window.location to fix a local state inconsistency.
+    description: Full reloads destroy operator context and hide state bugs. Fix the state management root cause instead.
+    forbidden_pattern: |
+      location.reload()
+      router.refresh()
+      window.location = window.location
+    applies_when: A panel, table, or component shows inconsistent or stale state after a user action.
+
+  - id: ui.fix.refresh_screen_to_hide_state_bug
+    summary: Do not trigger a full-screen or full-page refresh to mask a state management bug.
+    description: A reload that is required for correctness means the state machine is broken. Fix the transition logic.
+    forbidden_pattern: |
+      if (inconsistentState) location.reload()
+    applies_when: State inconsistency is observed after user interaction and reload is added as the fix.
+
+  - id: ui.fix.global_event_bus_without_contract
+    summary: Do not use generic DOM event names as a global event bus.
+    description: Events named "refresh", "update", or "changed" become invisible control flow. Name, type, and scope every event.
+    forbidden_pattern: |
+      dispatchEvent(new CustomEvent("refresh"))
+      window.addEventListener("update", handler)
+    applies_when: Cross-component communication is implemented using DOM events.
+
+  - id: ui.fix.untyped_custom_event_payload
+    summary: Do not dispatch CustomEvents with untyped or schema-less payloads.
+    description: Consumers must validate the payload before applying to state. Malformed payloads must be silently ignored.
+    forbidden_pattern: |
+      dispatchEvent(new CustomEvent("globular:updated", { detail: data }))
+      // where data has no declared type and consumer does not validate
+    applies_when: DOM CustomEvents carry data to consumer components.
+
+  - id: ui.fix.event_detail_as_backend_truth
+    summary: Do not treat DOM event detail as authoritative backend state.
+    description: Event detail is a cache invalidation signal. Use it to trigger a re-fetch, not to write authoritative state directly.
+    forbidden_pattern: |
+      window.addEventListener("globular:status-updated", e => setRuntimeHealth(e.detail.health))
+    applies_when: DOM event handler updates backend-authoritative state fields directly from event.detail.
+
+  - id: ui.fix.data_holder_as_status_authority
+    summary: Do not treat a component store entry or frontend singleton as the source of backend-authoritative state.
+    description: Data holders are render caches. Backend-authoritative fields must be re-fetched from authority, not read from cache as truth.
+    forbidden_pattern: |
+      const health = store.getServiceHealth(id)  // without re-fetching
+      if (dataHolder.dataset.installed === "true") showInstalled()
+    applies_when: Component reads runtime health, installed version, permissions, or topology from a local cache as if it were authoritative.
+
+  - id: ui.fix.dom_dataset_as_backend_truth
+    summary: Do not read data-* DOM attributes to determine backend operational state.
+    description: DOM attributes are rendering annotations. Operational state must come from a backend fetch or subscription.
+    forbidden_pattern: |
+      el.dataset.status === "healthy"
+      document.querySelector("[data-installed]")
+    applies_when: Code reads data-* attributes to make operational decisions about service status, permissions, or workflow state.
+
+  - id: ui.fix.accept_last_arriving_response_as_latest
+    summary: Do not apply async responses in arrival order without checking whether a newer request supersedes them.
+    description: Use AbortController or generation counters to discard stale responses.
+    forbidden_pattern: |
+      fetch(url).then(data => setState(data))  // without abort or generation check
+    applies_when: Component issues concurrent requests against the same target state.
+
+  - id: ui.fix.no_abort_or_generation_for_concurrent_requests
+    summary: Do not issue concurrent requests for the same target without a mechanism to detect and discard late arrivals.
+    description: AbortController or request generation tracking prevents stale responses from reverting newer state.
+    forbidden_pattern: |
+      // multiple requests issued on user action with no abort
+      setLoading(true)
+      fetch(url).then(setData)
+    applies_when: User actions trigger repeated fetches for the same resource (e.g. search input, filter change, rapid navigation).
+
+  - id: ui.fix.listener_without_cleanup
+    summary: Do not register an event listener, subscription, or polling loop without a matching cleanup in component teardown.
+    description: Every registration must have a deregistration path that fires on unmount, even on error-triggered teardown.
+    forbidden_pattern: |
+      useEffect(() => {
+        window.addEventListener("globular:updated", handler)
+        // no return cleanup
+      }, [])
+    applies_when: Component registers addEventListener, setInterval, subscribe, WebSocket, EventSource, or gRPC-web stream.
+
+  - id: ui.fix.polling_loop_survives_component_unmount
+    summary: Do not leave setInterval or setTimeout polling loops running after the owning component unmounts.
+    description: Leaked timers mutate state after unmount and cause double-refresh symptoms.
+    forbidden_pattern: |
+      useEffect(() => {
+        const id = setInterval(fetchData, 5000)
+        // no clearInterval on cleanup
+      }, [])
+    applies_when: Component starts a polling loop to keep data fresh.
+
+  - id: ui.fix.stale_subscription_updates_new_screen
+    summary: Do not allow a subscription opened for screen A to mutate state on screen B after navigation.
+    description: Close subscriptions opened for the previous route before opening ones for the next route.
+    forbidden_pattern: |
+      // subscription started in screen A, not cleaned up on unmount
+      // updates still arrive and call setState after navigation to screen B
+    applies_when: Subscriptions or streams are tied to specific screens or route contexts.
+
+  - id: ui.fix.list_key_uses_array_index
+    summary: Do not use array index as the key for dynamic list items.
+    description: Array index keys cause frameworks to reuse component instances by position, moving state to the wrong item on reorder.
+    forbidden_pattern: |
+      {items.map((item, i) => <Row key={i} item={item} />)}
+    applies_when: List renders services, nodes, packages, workflows, tasks, resources, users, roles, or permissions.
+
+  - id: ui.fix.display_name_as_identity
+    summary: Do not use display name, translated label, or human-readable string as list key or selected-state identity.
+    description: Display names change (rename, re-label, translation). Use stable backend ID as identity.
+    forbidden_pattern: |
+      {items.map(item => <Row key={item.name} item={item} />)}
+    applies_when: List key or selected-state identity is derived from a human-readable field rather than a backend ID.
+
+  - id: ui.fix.spinner_hides_backend_failure
+    summary: Do not show an infinite spinner when a backend request has failed.
+    description: Distinguish loading from failed. Show the backend error reason when a request fails, not a permanent spinner.
+    forbidden_pattern: |
+      if (loading || error) return <Spinner />
+    applies_when: Component shows a loading indicator that does not distinguish backend failure from still-in-flight.
+
+  - id: ui.fix.empty_state_hides_permission_denied
+    summary: Do not render an empty list when the backend returned PERMISSION_DENIED.
+    description: Empty means zero authorized results. Permission denied must be shown as a distinct denied state.
+    forbidden_pattern: |
+      if (error) return <EmptyState />  // maps permission denied to empty
+    applies_when: List or result component handles backend errors in the same path as empty results.
+
+  - id: ui.fix.unknown_rendered_as_empty_success
+    summary: Do not render empty success when authority has not been established.
+    description: Empty success requires a positive authoritative response. Unknown or loading states must not masquerade as success.
+    forbidden_pattern: |
+      if (!data) return <EmptyList message="No items" />  // before data is fetched
+    applies_when: Component renders an empty state before the first authoritative response has been received.
+
+  - id: ui.fix.double_submit_starts_duplicate_workflow
+    summary: Do not allow a second form submission while the first is still in flight.
+    description: Disable the submit control while pending. Re-enable only on terminal response.
+    forbidden_pattern: |
+      <button onClick={handleSubmit}>Submit</button>  // no disabled-while-pending guard
+    applies_when: Form or button triggers workflow start, approval, deploy, restart, or other mutating action.
+
+  - id: ui.fix.retry_creates_new_mutation_without_idempotency_key
+    summary: Do not create a fresh request with a new operation identity when retrying a failed mutating action.
+    description: Reuse the original idempotency key on retry, or verify the original succeeded before retrying.
+    forbidden_pattern: |
+      onRetry={() => submitForm()}  // creates new request with new ID each time
+    applies_when: Retry UI is offered for mutating operations (install, approve, deploy, topology apply).
+
+  - id: ui.fix.operational_context_lost_on_navigation
+    summary: Do not store operationally relevant context only in ephemeral component state.
+    description: Encode resource selection in route or query params so it survives reload and can be shared.
+    forbidden_pattern: |
+      const [selectedNode, setSelectedNode] = useState(null)  // for a diagnostic screen with shareable context
+    applies_when: Diagnostic or operational screen shows selected node, service, workflow run, filter, or time range.
+
+  - id: ui.fix.selected_resource_only_in_ephemeral_state
+    summary: Do not store selected resource identity only in React/Vue component state.
+    description: Resource identity must survive reload. Use URL route or query params.
+    forbidden_pattern: |
+      const [resourceId, setResourceId] = useState(null)  // lost on navigation
+    applies_when: Screen shows a selected service, node, workflow run, or resource that the operator may need to return to.
+
+  - id: ui.fix.color_only_status
+    summary: Do not communicate operational status using color alone.
+    description: Add text labels and aria-label to status indicators. Color alone fails colorblind users and screen readers.
+    forbidden_pattern: |
+      <span className={health === "healthy" ? "bg-green-500" : "bg-red-500"} />
+    applies_when: Status badge, indicator, or icon communicates health, permission, workflow state, or risk.
+
+  - id: ui.fix.warning_only_visible_on_hover
+    summary: Do not place critical warnings inside hover tooltips as the sole access point.
+    description: Critical warnings must be in the visible DOM. Tooltips may supplement but must not be the only channel.
+    forbidden_pattern: |
+      <Tooltip content={criticalDestructiveWarning}><Icon /></Tooltip>
+    applies_when: Destructive risk, degraded reason, or blocked reason is communicated via tooltip only.
+
+  - id: ui.fix.disabled_button_without_reason
+    summary: Do not disable an action button without showing the operator why.
+    description: Show the reason: "Requires admin permission", "Install in progress", "Quorum insufficient".
+    forbidden_pattern: |
+      <button disabled={!canInstall}>Install</button>  // no tooltip or reason text
+    applies_when: Action button is disabled and the operator may not know why.
+
+  - id: ui.fix.time_only_cache_for_operator_state
+    summary: Do not use time-only TTL to expire caches for operator-critical state.
+    description: Include backend authority generation in the cache key or entry. Invalidate on generation change, not just on timer expiry.
+    forbidden_pattern: |
+      cache.set(key, data, { ttl: 60_000 })  // for runtime health or installed version
+    applies_when: Frontend caches runtime health, permissions, installed version, topology, or workflow state.
+
+  - id: ui.fix.cache_not_invalidated_on_backend_generation_change
+    summary: Do not serve cached operator-critical state after the backend generation has changed.
+    description: Subscribe to backend change events or include generation in the cache key. Invalidate when authority changes.
+    forbidden_pattern: |
+      // cache entry has no generation field; serves old data until TTL expires
+    applies_when: Backend resource revision, generation, or version increments but frontend cache continues serving the old value.
+
+  - id: ui.fix.error_boundary_blanks_operator_context
+    summary: Do not render a full-screen error fallback that removes all context from the operator.
+    description: Scope error boundaries to the failing component. Preserve resource identity in URL and offer a retry path.
+    forbidden_pattern: |
+      <ErrorBoundary fallback={<FullPageErrorScreen />}>
+        <EntireApp />
+      </ErrorBoundary>
+    applies_when: Error boundary wraps the entire application view or a major screen region.
+
+  - id: ui.fix.error_boundary_hides_critical_warning
+    summary: Do not let an error boundary fallback replace or hide a visible critical warning.
+    description: Hold critical warning state outside the scope of potentially failing components so it survives partial failures.
+    forbidden_pattern: |
+      // critical warning state stored inside the component tree covered by a wide error boundary
+    applies_when: Error boundary fallback replaces a region that contained a destructive risk, degraded, or blocked reason warning.

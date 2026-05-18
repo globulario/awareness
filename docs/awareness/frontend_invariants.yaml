@@ -217,3 +217,317 @@ invariants:
     related_failure_modes:
       - fm.globular.vip_transition_cascade
       - fm.industry.floating_address_used_as_durable_identity
+
+  # ── Frontend execution mechanics invariants ───────────────────────────────────
+  # These invariants govern how the UI updates, remembers, listens, caches, and
+  # reacts. They complement the existing invariants (which govern what the UI says)
+  # by protecting the mechanics that move truth around without corrupting it.
+
+  - id: ui.partial_update_preserves_screen_context
+    title: Frontend updates must refresh the smallest responsible UI region, not the full page
+    severity: high
+    status: active
+    summary: |
+      A frontend update must refresh only the component, data holder, panel, row, or card
+      responsible for the changed data. Full page reloads are forbidden when the change can be
+      propagated by state update, DOM event, subscription event, or targeted data refresh.
+      Full page reloads destroy operator context: expanded panels, selected node, filter state,
+      scroll position, warning visibility, and diagnostic flow.
+    enforcement: |
+      Before adding location.reload(), window.location = ..., router.refresh(), full re-mount
+      behavior, or a whole-screen refresh, verify that a targeted data-holder refresh cannot
+      solve the problem. If a local state bug requires a reload to hide itself, that is a bug
+      in state management, not a justification for a reload.
+    forbidden_fixes:
+      - ui.fix.full_page_reload_for_local_state_change
+      - ui.fix.refresh_screen_to_hide_state_bug
+    required_tests:
+      - TestDataHolderRefresh_DoesNotReloadWholePage
+      - TestRefreshPreservesExpandedPanelAndSelection
+    related_failure_modes:
+      - fm.ui.full_page_reload_masks_state_bug
+
+  - id: ui.dom_event_contract_must_be_typed_and_scoped
+    title: DOM events used for frontend synchronization must have a declared contract
+    severity: high
+    status: active
+    summary: |
+      DOM events used for frontend synchronization must have a declared contract: event name,
+      payload shape, owner, producer, consumers, and scope. DOM events are useful for loosely
+      coupled UI updates, but without contracts they become invisible control flow. An event
+      named "refresh" or "update" with an untyped payload is an undocumented global event bus.
+      Frontend event detail must not be treated as backend truth.
+    enforcement: |
+      Before adding or changing CustomEvent, dispatchEvent, or addEventListener for
+      cross-component communication, verify: the event name is namespaced (e.g.,
+      globular:service-runtime-updated), the payload is typed or schema-checked, the producer
+      and consumers are known, malformed payloads are safely ignored, and the event detail is
+      not used as backend authority. Generic event names (refresh, update, reloadEverything)
+      are forbidden.
+    forbidden_fixes:
+      - ui.fix.global_event_bus_without_contract
+      - ui.fix.untyped_custom_event_payload
+      - ui.fix.event_detail_as_backend_truth
+    required_tests:
+      - TestDomEvent_HasTypedPayloadContract
+      - TestMalformedDomEvent_DoesNotMutateAuthoritativeState
+    related_failure_modes:
+      - fm.ui.untyped_dom_event_causes_wrong_refresh
+
+  - id: ui.data_holder_is_cache_not_authority
+    title: DOM elements, component stores, and frontend singletons are caches — they must not become backend authority
+    severity: critical
+    status: active
+    summary: |
+      A DOM element, component store, browser cache, or frontend singleton may hold data for
+      rendering efficiency, but must never become the authority for backend truth. Data-holder
+      elements are mirrors, not sources of truth. Backend-authoritative fields (runtime health,
+      workflow success/failure, installed version, desired state, permission result, package
+      identity, node membership, objectstore topology) must always be sourced from backend
+      authority, not from a data-holder element.
+    enforcement: |
+      Before adding a data-holder component, declare which fields are local UI state and which
+      fields come from backend authority. Local UI state includes: selected row, expanded panel,
+      draft text, current tab, temporary filter input, cached query result. Backend authority
+      includes: runtime health, workflow success/failure, installed version, desired state,
+      permission result, package identity, node membership, and topology truth. Data-holder
+      elements must invalidate when the backend authority changes.
+    forbidden_fixes:
+      - ui.fix.data_holder_as_status_authority
+      - ui.fix.dom_dataset_as_backend_truth
+    required_tests:
+      - TestDataHolder_InvalidatesFromBackendEvent
+      - TestDataHolder_DoesNotInventRuntimeStatus
+    related_failure_modes:
+      - fm.ui.data_holder_becomes_authority
+    related_invariants:
+      - ui.visible_state_requires_authority
+
+  - id: ui.async_result_must_not_overwrite_newer_state
+    title: Late async responses must not overwrite newer frontend state
+    severity: high
+    status: active
+    summary: |
+      Frontend requests often race. A slower old response can arrive after a newer request and
+      silently revert the UI to a stale state. Any component that issues concurrent requests
+      against the same target state must guard against late responses overwriting newer state.
+    enforcement: |
+      Before writing code that issues concurrent requests against the same target state, verify
+      that one of the following guards is used: AbortController to cancel the previous request,
+      request generation counter, resource revision check, timestamp comparison, correlation ID,
+      last-started request guard, or backend version/generation check before applying the
+      response.
+    forbidden_fixes:
+      - ui.fix.accept_last_arriving_response_as_latest
+      - ui.fix.no_abort_or_generation_for_concurrent_requests
+    required_tests:
+      - TestLateResponse_DoesNotOverwriteNewerState
+      - TestAbortedRequest_DoesNotMutateComponentState
+    related_failure_modes:
+      - fm.ui.stale_async_response_reverts_state
+
+  - id: ui.subscription_lifecycle_must_be_owned
+    title: Any component that registers listeners, subscriptions, or polling must own cleanup
+    severity: high
+    status: active
+    summary: |
+      Any component that registers event listeners, subscriptions, streams, timers, or polling
+      loops must own the matching cleanup path. Leaked listeners cause duplicate refreshes, stale
+      updates, memory leaks, and state mutation after component unmount.
+    enforcement: |
+      Before adding addEventListener, setInterval, setTimeout loops, subscribe, watch,
+      WebSocket, EventSource, gRPC-web streams, or custom store listeners, verify that the
+      matching cleanup path exists and removes the exact listener/subscription when the
+      component unmounts or the scope ends. The cleanup must run even when the component
+      unmounts due to navigation or error.
+    forbidden_fixes:
+      - ui.fix.listener_without_cleanup
+      - ui.fix.polling_loop_survives_component_unmount
+      - ui.fix.stale_subscription_updates_new_screen
+    required_tests:
+      - TestComponentUnmount_RemovesDomListener
+      - TestSubscriptionCleanup_PreventsDuplicateRefresh
+    related_failure_modes:
+      - fm.ui.listener_leak_duplicates_refresh
+
+  - id: ui.list_identity_must_use_backend_id
+    title: Dynamic lists must key rows by stable backend identity, not array index or display name
+    severity: high
+    status: active
+    summary: |
+      Dynamic lists must key rows by stable backend identity, not array index, display name,
+      sort position, translated text, or label. When sorting, filtering, drag/drop, or
+      virtualization changes list order, unstable keys move component state to the wrong row.
+      This can silently mismatch expanded state, selection state, or inline edit state with
+      the wrong item.
+    enforcement: |
+      Before writing or editing lists that render services, nodes, packages, workflows, tasks,
+      resources, users, roles, or permissions, verify that the row key is a stable backend
+      identity (service_id, node_id, package_id, workflow_run_id, resource_id, permission_id,
+      user_id, role_id). Array index and display name are forbidden as row keys for anything
+      that can reorder, filter, or sort.
+    forbidden_fixes:
+      - ui.fix.list_key_uses_array_index
+      - ui.fix.display_name_as_identity
+    required_tests:
+      - TestListReorder_PreservesRowStateByBackendId
+      - TestFilteredList_DoesNotMoveStateBetweenRows
+    related_failure_modes:
+      - fm.ui.index_key_moves_row_state
+
+  - id: ui.empty_loading_unknown_failed_are_distinct
+    title: Empty, loading, unknown, stale, denied, and failed UI states must not collapse into one generic state
+    severity: high
+    status: active
+    summary: |
+      These states mean different things operationally: empty means authority says zero results;
+      loading means query is in progress; unknown means authority has not been established;
+      stale means old data is being shown; denied means the user lacks permission; failed means
+      the backend or query failed. Collapsing any two of these into a single generic UI state
+      hides the true operational condition from the operator.
+    enforcement: |
+      Before editing spinners, empty states, error banners, fallback panels, or result tables,
+      verify that: permission denied is not rendered as empty; backend failure is not rendered
+      as infinite loading; unknown is not rendered as healthy or empty; stale data is visibly
+      marked; empty success requires an authoritative response confirming zero results.
+    forbidden_fixes:
+      - ui.fix.spinner_hides_backend_failure
+      - ui.fix.empty_state_hides_permission_denied
+      - ui.fix.unknown_rendered_as_empty_success
+    required_tests:
+      - TestPermissionDenied_NotRenderedAsEmptyList
+      - TestBackendFailure_NotRenderedAsInfiniteSpinner
+      - TestUnknownState_NotRenderedAsHealthyOrEmpty
+    related_failure_modes:
+      - fm.ui.permission_denied_rendered_as_empty
+    related_invariants:
+      - ui.visible_state_requires_authority
+      - ui.action_requires_permission_contract
+
+  - id: ui.form_submit_must_be_idempotent_or_singleflight
+    title: Mutating form submissions must be idempotent or guarded by single-flight behavior
+    severity: high
+    status: active
+    summary: |
+      Double-clicks, Enter key submit, retry buttons, and network retry can create duplicate
+      workflows or duplicate backend mutations. Every mutating form submission must be either
+      idempotent or protected by a single-flight guard that prevents duplicate requests while
+      one is in flight.
+    enforcement: |
+      Before editing mutating forms or buttons that trigger workflow start, BPMN work item
+      completion, approval/reject, package deploy, service restart, role/permission changes,
+      topology apply, or destructive actions, verify one of: submit disabled while pending;
+      idempotency key used; backend operation is idempotent; frontend single-flight guard
+      exists; retry reuses the same operation identity when appropriate.
+    forbidden_fixes:
+      - ui.fix.double_submit_starts_duplicate_workflow
+      - ui.fix.retry_creates_new_mutation_without_idempotency_key
+    required_tests:
+      - TestDoubleClick_DoesNotCreateDuplicateMutation
+      - TestRetry_ReusesIdempotencyKey
+    related_failure_modes:
+      - fm.ui.double_submit_creates_duplicate_mutation
+
+  - id: ui.navigation_state_must_be_shareable_when_operationally_relevant
+    title: Operationally relevant screen state must survive reload and navigation when appropriate
+    severity: medium
+    status: active
+    summary: |
+      For diagnostic UIs, the selected node, service, workflow run, resource, tab, filter,
+      and time range are part of the operator's context. This context must survive reload,
+      back/forward navigation, and sharing when it is operationally relevant. State stored
+      only in ephemeral component state is lost when the operator navigates away or shares
+      a URL with a colleague.
+    enforcement: |
+      Before editing diagnostic pages, topology views, workflow views, admin screens, and
+      audit pages, decide whether selected context should live in route params, query params,
+      fragment, or durable local UI state. Do not store operationally important context only
+      in ephemeral component state when the user must be able to return to it or share it.
+    forbidden_fixes:
+      - ui.fix.operational_context_lost_on_navigation
+      - ui.fix.selected_resource_only_in_ephemeral_state
+    required_tests:
+      - TestWorkflowRunSelection_SurvivesReload
+      - TestFilterState_RoundTripsThroughURL
+    related_failure_modes:
+      - fm.ui.operational_context_lost_on_navigation
+
+  - id: ui.accessibility_must_preserve_operational_meaning
+    title: Critical UI meaning must not depend only on color, hover, animation, or visual layout
+    severity: medium
+    status: active
+    summary: |
+      Accessibility in an operator UI is not cosmetic — it preserves operational meaning.
+      Critical UI states (warnings, errors, disabled reasons, destructive action risk) must
+      not depend only on color, hover, animation, visual layout, or icon shape. If an operator
+      using a screen reader or keyboard cannot access the same operational meaning as one using
+      a mouse, the UI has an operational gap, not merely an accessibility gap.
+    enforcement: |
+      Before editing status badges, warnings, forms, modals, command menus, or destructive
+      actions, verify: status has text, not color only; warnings are not hover-only; destructive
+      actions expose risk in a readable form; disabled actions expose their reason; keyboard
+      navigation works for critical actions.
+    forbidden_fixes:
+      - ui.fix.color_only_status
+      - ui.fix.warning_only_visible_on_hover
+      - ui.fix.disabled_button_without_reason
+    required_tests:
+      - TestStatusBadge_HasTextAndAriaLabel
+      - TestDestructiveWarning_AnnouncedToAssistiveTech
+      - TestDisabledAction_ExposesReason
+    related_invariants:
+      - ui.dangerous_warning_must_remain_visible
+      - ui.action_requires_permission_contract
+
+  - id: ui.cache_invalidation_must_follow_authority_generation
+    title: Client cache invalidation must follow backend authority generation, version, or explicit invalidation event
+    severity: high
+    status: active
+    summary: |
+      Time-only cache expiration is not enough for operator-critical state. Frontend caches for
+      runtime status, workflow runs, installed state, permissions, topology, package metadata,
+      or resource details must include the authority identity needed to invalidate them correctly.
+      A frontend cache that outlives the backend generation it represents is showing the operator
+      stale truth.
+    enforcement: |
+      Before adding frontend caching for operator-critical state, verify that cache entries
+      include the authority identity that drives invalidation: backend generation, resource
+      revision, build_id, workflow_run_id, event sequence, permission version, user/role
+      identity, explicit invalidation DOM event, or subscription event. Time-only expiry
+      (TTL alone) is insufficient for operator-critical state.
+    forbidden_fixes:
+      - ui.fix.time_only_cache_for_operator_state
+      - ui.fix.cache_not_invalidated_on_backend_generation_change
+    required_tests:
+      - TestCacheInvalidates_WhenGenerationChanges
+      - TestPermissionCacheInvalidates_WhenUserOrRoleChanges
+    related_failure_modes:
+      - fm.ui.time_only_cache_hides_backend_change
+    related_invariants:
+      - ui.status_freshness_must_be_surfaced
+
+  - id: ui.error_boundary_must_preserve_diagnostic_context
+    title: Frontend error boundaries must preserve diagnostic context, not blank the operator screen
+    severity: high
+    status: active
+    summary: |
+      A rendering failure should not erase the operator's diagnostic context: selected resource
+      identity, visible warnings, last-known data timestamp, or safe recovery options. An error
+      boundary that blanks the screen destroys the operator's ability to understand what failed
+      and how to recover.
+    enforcement: |
+      Before editing error boundaries or fallback screens, verify that the fallback shows: which
+      component or panel failed, selected resource identity when safe to display, last known
+      safe data timestamp if available, a safe retry action, a link or path back to stable parent
+      context, and critical warning state if already known. Blanking the screen is never the
+      correct fallback for a partial component failure.
+    forbidden_fixes:
+      - ui.fix.error_boundary_blanks_operator_context
+      - ui.fix.error_boundary_hides_critical_warning
+    required_tests:
+      - TestErrorBoundary_ShowsFailedComponentAndResourceId
+      - TestErrorBoundary_PreservesCriticalWarning
+    related_failure_modes:
+      - fm.ui.error_boundary_loses_diagnostic_context
+    related_invariants:
+      - ui.dangerous_warning_must_remain_visible

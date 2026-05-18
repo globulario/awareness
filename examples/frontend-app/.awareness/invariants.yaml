@@ -162,3 +162,376 @@ invariants:
     verified_by:
       - frontend-awareness-v1
     stale_after_days: 90
+
+  # ── Frontend execution mechanics invariants ───────────────────────────────────
+
+  - id: ui.update.partial_refresh_required
+    title: Updates must refresh the smallest responsible UI region
+    severity: high
+    status: active
+    summary: Full page reloads are forbidden when a targeted data-holder or component refresh can propagate the change.
+    description: |
+      Full page reloads destroy operator context: expanded panels, selected node, filter
+      state, scroll position, warning visibility, and diagnostic flow. A reload that hides
+      a local state bug is a deferred bug, not a fix.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.full_page_reload_for_local_state_change
+      - ui.fix.refresh_screen_to_hide_state_bug
+    related_failure_modes:
+      - fm.ui.full_page_reload_masks_state_bug
+    required_tests:
+      - data holder refresh does not reload whole page
+      - expanded panel survives data refresh
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.partial_update
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.dom_event.contract_required
+    title: DOM events for cross-component sync must have a typed, scoped contract
+    severity: high
+    status: active
+    summary: CustomEvent names must be namespaced, payloads must be typed, and consumers must validate before applying to state.
+    description: |
+      Unnamespaced events (refresh, update, changed) become an invisible global bus.
+      Untyped payloads applied to state without validation corrupt state silently.
+      Frontend event detail is a cache invalidation signal — not backend truth.
+    files:
+      - src/**/*.ts
+      - src/**/*.tsx
+      - apps/**/*.ts
+      - apps/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.global_event_bus_without_contract
+      - ui.fix.untyped_custom_event_payload
+      - ui.fix.event_detail_as_backend_truth
+    related_failure_modes:
+      - fm.ui.untyped_dom_event_causes_wrong_refresh
+    required_tests:
+      - DOM event has typed payload contract
+      - malformed event does not mutate authoritative state
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.dom_event_contract
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.data_holder.cache_not_authority
+    title: Data holders are rendering caches, not sources of backend truth
+    severity: critical
+    status: active
+    summary: Component stores, DOM datasets, and frontend singletons must not hold backend-authoritative fields as their source of truth.
+    description: |
+      Local UI state (selection, expansion, draft, filter) may live in a data holder.
+      Backend authority (runtime health, installed version, permissions, topology) must
+      always be sourced from a backend fetch or subscription — not from a data holder
+      that may be stale or out of date.
+    files:
+      - src/**/*.ts
+      - src/**/*.tsx
+      - apps/**/*.ts
+      - apps/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.data_holder_as_status_authority
+      - ui.fix.dom_dataset_as_backend_truth
+    related_failure_modes:
+      - fm.ui.data_holder_becomes_authority
+    required_tests:
+      - data holder invalidates on backend event
+      - data holder does not invent runtime status
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.data_holder_contract
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.async.no_stale_response_overwrite
+    title: Late async responses must not overwrite newer UI state
+    severity: high
+    status: active
+    summary: Concurrent requests against the same target state must use abort, generation, or revision guards.
+    description: |
+      A slow response arriving after a newer request silently reverts the UI. Use
+      AbortController, request generation counters, or resource revision checks to
+      discard responses that are no longer current.
+    files:
+      - src/**/*.ts
+      - src/**/*.tsx
+      - apps/**/*.ts
+      - apps/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.accept_last_arriving_response_as_latest
+      - ui.fix.no_abort_or_generation_for_concurrent_requests
+    related_failure_modes:
+      - fm.ui.stale_async_response_reverts_state
+    required_tests:
+      - late response does not overwrite newer state
+      - aborted request does not mutate component state
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.async_guard
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.subscription.lifecycle_owned
+    title: Components must own cleanup for every listener, subscription, or polling loop they register
+    severity: high
+    status: active
+    summary: Leaked listeners cause duplicate refreshes, stale mutations, and memory leaks after unmount.
+    description: |
+      Every addEventListener, setInterval, subscribe, WebSocket, EventSource, or gRPC-web
+      stream registration must have a matching cleanup that fires on component teardown.
+      The cleanup must run even on error-triggered unmount.
+    files:
+      - src/**/*.ts
+      - src/**/*.tsx
+      - apps/**/*.ts
+      - apps/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.listener_without_cleanup
+      - ui.fix.polling_loop_survives_component_unmount
+      - ui.fix.stale_subscription_updates_new_screen
+    related_failure_modes:
+      - fm.ui.listener_leak_duplicates_refresh
+    required_tests:
+      - component unmount removes DOM listener
+      - subscription cleanup prevents duplicate refresh
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.subscription_lifecycle
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.list.stable_backend_key
+    title: Dynamic lists must key rows by stable backend identity
+    severity: high
+    status: active
+    summary: Array index, display name, and sort position are forbidden as list keys for anything that can reorder, filter, or sort.
+    description: |
+      When list order changes (sort, filter, drag, real-time update), unstable keys
+      move component state to the wrong row — silently mismatching selection, expansion,
+      and inline edit state.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.list_key_uses_array_index
+      - ui.fix.display_name_as_identity
+    related_failure_modes:
+      - fm.ui.index_key_moves_row_state
+    required_tests:
+      - list reorder preserves row state by backend ID
+      - filtered list does not move state between rows
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.list_identity
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.state.empty_loading_unknown_distinct
+    title: Empty, loading, unknown, stale, denied, and failed states must be visually distinct
+    severity: high
+    status: active
+    summary: Collapsing any two of these states into a generic UI state hides the true operational condition.
+    description: |
+      Permission denied must not look like empty. Backend failure must not look like
+      loading forever. Unknown must not look like healthy. Stale data must be visibly
+      marked. Empty success requires a positive authoritative response.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.spinner_hides_backend_failure
+      - ui.fix.empty_state_hides_permission_denied
+      - ui.fix.unknown_rendered_as_empty_success
+    related_failure_modes:
+      - fm.ui.permission_denied_rendered_as_empty
+    required_tests:
+      - permission denied not rendered as empty list
+      - backend failure not rendered as infinite spinner
+      - unknown state not rendered as healthy
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.state_distinction
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.form.idempotent_submit
+    title: Mutating form submissions must be idempotent or single-flight guarded
+    severity: high
+    status: active
+    summary: Double-click, Enter repeat, and network retry must not create duplicate workflows or mutations.
+    description: |
+      Submit controls must be disabled while a request is in flight, or the operation
+      must use an idempotency key. Retry must reuse the original operation identity
+      when the backend supports it.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.double_submit_starts_duplicate_workflow
+      - ui.fix.retry_creates_new_mutation_without_idempotency_key
+    related_failure_modes:
+      - fm.ui.double_submit_creates_duplicate_mutation
+    required_tests:
+      - double click does not create duplicate mutation
+      - retry reuses idempotency key
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.idempotent_submit
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.navigation.operational_context_shareable
+    title: Operationally relevant screen state must survive reload and navigation
+    severity: medium
+    status: active
+    summary: Selected node, service, workflow run, filter, and time range must not live only in ephemeral component state for diagnostic screens.
+    description: |
+      Ephemeral component state is lost on navigation, reload, or URL share. For
+      diagnostic and operational screens, the operator's selection context must be
+      recoverable via route params, query params, or durable local storage.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.operational_context_lost_on_navigation
+      - ui.fix.selected_resource_only_in_ephemeral_state
+    related_failure_modes:
+      - fm.ui.operational_context_lost_on_navigation
+    required_tests:
+      - workflow run selection survives reload
+      - filter state round-trips through URL
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.navigation_context
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.cache.generation_invalidation
+    title: Frontend caches for operator-critical state must invalidate on authority generation change
+    severity: high
+    status: active
+    summary: Time-only TTL is insufficient for operator-critical state. Cache entries must include authority generation for invalidation.
+    description: |
+      A frontend cache that outlives the backend generation it represents shows the operator
+      stale truth. Cache invalidation must be driven by backend generation, resource revision,
+      version, or explicit invalidation event — not time alone.
+    files:
+      - src/**/*.ts
+      - apps/**/*.ts
+      - packages/**/*.ts
+    forbidden_fixes:
+      - ui.fix.time_only_cache_for_operator_state
+      - ui.fix.cache_not_invalidated_on_backend_generation_change
+    related_failure_modes:
+      - fm.ui.time_only_cache_hides_backend_change
+    required_tests:
+      - cache invalidates when generation changes
+      - permission cache invalidates when user or role changes
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.cache_invalidation
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
+
+  - id: ui.error_boundary.preserve_context
+    title: Error boundaries must preserve diagnostic context, not blank the operator screen
+    severity: high
+    status: active
+    summary: A rendering failure must not erase selected resource identity, visible warnings, last-known data, or safe recovery options.
+    description: |
+      Scope error boundaries to the failing component, not the entire view. The fallback
+      must show which component failed, preserve the resource URL, offer a safe retry,
+      and not hide critical warning state that was already visible.
+    files:
+      - src/**/*.tsx
+      - apps/**/*.tsx
+      - packages/**/*.tsx
+    forbidden_fixes:
+      - ui.fix.error_boundary_blanks_operator_context
+      - ui.fix.error_boundary_hides_critical_warning
+    related_failure_modes:
+      - fm.ui.error_boundary_loses_diagnostic_context
+    required_tests:
+      - error boundary shows failed component and resource id
+      - error boundary preserves critical warning
+    proven_by:
+      tests: []
+      incidents: []
+    used_by:
+      preflight_rules:
+        - frontend.error_boundary
+      evidence_contracts: []
+    last_verified: "2026-05-17"
+    verified_by:
+      - frontend-awareness-v1
+    stale_after_days: 90
