@@ -113,7 +113,9 @@ func TestBundleManifest_RuntimeOverlayCompatibilityAlias(t *testing.T) {
 	}
 	b2, _ := json.Marshal(m2)
 	var got2 BundleManifest
-	json.Unmarshal(b2, &got2)
+	if err := json.Unmarshal(b2, &got2); err != nil {
+		t.Fatal(err)
+	}
 	if got2.RuntimeSignalsIncluded {
 		t.Error("RuntimeSignalsIncluded should be false for NullAdapter bundle")
 	}

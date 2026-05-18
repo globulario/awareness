@@ -220,7 +220,7 @@ func TestCollectPorts_DetectsListenerBoundToNodeIP(t *testing.T) {
 	defer func() { procNetTCPPaths = orig }()
 
 	coll := &Collector{}
-	obs := coll.collectPorts(nil)
+	obs := coll.collectPorts(context.TODO())
 
 	var scyllaPort *PortObservation
 	for i, p := range obs {

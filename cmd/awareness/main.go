@@ -617,7 +617,7 @@ func runGraphQuery(args []string) {
 		case "--limit":
 			if i+1 < len(args) {
 				i++
-				fmt.Sscanf(args[i], "%d", &limit)
+				_, _ = fmt.Sscanf(args[i], "%d", &limit)
 			}
 		}
 	}

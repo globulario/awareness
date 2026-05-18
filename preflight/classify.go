@@ -105,13 +105,3 @@ func ClassifyTask(task string) []TaskClass {
 
 	return classes
 }
-
-// hasClass returns true if the class list contains c.
-func hasClass(classes []TaskClass, c TaskClass) bool {
-	for _, cl := range classes {
-		if cl == c {
-			return true
-		}
-	}
-	return false
-}

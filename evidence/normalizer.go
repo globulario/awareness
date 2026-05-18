@@ -454,11 +454,6 @@ func expectedPort(name string) int {
 	return 0
 }
 
-// isScyllaUnit returns true for Scylla-related systemd units.
-func isScyllaUnit(unit string) bool {
-	return unit == "scylla-server.service" || unit == "scylla.service"
-}
-
 // isCriticalUnit returns true for units that should always be active on a Globular node.
 func isCriticalUnit(unit string) bool {
 	return unit == "globular-node-agent.service" || unit == "etcd.service"

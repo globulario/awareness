@@ -50,7 +50,9 @@ func Build(prof *project.ProjectProfile, outputDir string, opts BuildOptions) (*
 
 	// Write profile.json.
 	if profData, err := json.MarshalIndent(prof, "", "  "); err == nil {
-		os.WriteFile(filepath.Join(outputDir, "profile.json"), profData, 0o644)
+		if err := os.WriteFile(filepath.Join(outputDir, "profile.json"), profData, 0o644); err != nil {
+			return nil, fmt.Errorf("write profile.json: %w", err)
+		}
 	}
 
 	// Copy invariants.

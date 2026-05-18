@@ -377,19 +377,6 @@ func (c *Classifier) populateActions(v *Day1Verdict) {
 	}
 }
 
-// portListening returns true if port p appears in obs with Listening=true.
-// When the port was not observed at all, it returns false (unknown is NOT ready).
-// Use portReady when you also want to allow "service not expected on this node"
-// to pass without a port observation.
-func portListening(obs []PortObservation, port int) bool {
-	for _, o := range obs {
-		if o.Port == port {
-			return o.Listening
-		}
-	}
-	return false
-}
-
 // portReady decides whether a port should be treated as ready for a Day-1 gate.
 //
 // Decision rules:

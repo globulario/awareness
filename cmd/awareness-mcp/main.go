@@ -158,7 +158,7 @@ func (s *mcpServer) serveStdio(ctx context.Context) error {
 		if resp != nil {
 			data, _ := json.Marshal(resp)
 			fmt.Fprintf(writer, "Content-Length: %d\r\n\r\n", len(data))
-			writer.Write(data)
+			_, _ = writer.Write(data)
 			writer.Flush()
 		}
 	}
