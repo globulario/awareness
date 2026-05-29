@@ -412,25 +412,39 @@ func (n *Normalizer) normalizeWorkflowWithFacts(snap *NodeRuntimeSnapshot, accum
 // ── domain helpers ────────────────────────────────────────────────────────────
 
 // serviceFailKind returns the appropriate FactKind for a failed systemd unit.
+//
+// Globular installs its managed infrastructure units under the canonical
+// `globular-<name>.service` prefix (e.g. globular-minio.service). Non-Globular
+// distros run the upstream names (minio.service, etcd.service, ...). We
+// canonicalize to the bare component name so both forms classify the same way
+// — this is the only place that mapping should live.
 func serviceFailKind(unit string, portMap map[int]bool) (FactKind, Severity, []string) {
-	name := strings.TrimSuffix(unit, ".service")
+	name := canonicalUnitBase(unit)
 	_ = portMap
-	switch {
-	case unit == "scylla-server.service" || unit == "scylla.service":
+	switch name {
+	case "scylla-server", "scylla":
 		return FactScyllaCQLUnreachable, SeverityCritical,
 			[]string{"workflow", "event", "resource", "repository"}
-	case unit == "minio.service":
+	case "minio":
 		return FactObjectstoreTopologyMissing, SeverityHigh,
 			[]string{"repository", "package-distribution"}
-	case unit == "etcd.service":
+	case "etcd":
 		return FactEtcdUnreachable, SeverityCritical,
 			[]string{"controller", "node-agent", "all"}
-	case unit == "envoy.service":
+	case "envoy":
 		return FactGatewayBootstrapMissing, SeverityHigh,
 			[]string{"mesh", "gateway"}
 	default:
 		return FactServiceFailed, SeverityHigh, serviceBlocks(name)
 	}
+}
+
+// canonicalUnitBase strips the `.service` suffix and the optional Globular
+// `globular-` prefix so callers can switch on the bare component name.
+// "globular-minio.service" → "minio", "scylla-server.service" → "scylla-server".
+func canonicalUnitBase(unit string) string {
+	name := strings.TrimSuffix(unit, ".service")
+	return strings.TrimPrefix(name, "globular-")
 }
 
 // expectedPort returns the primary listening port for a service, or 0 if unknown.
@@ -456,7 +470,11 @@ func expectedPort(name string) int {
 
 // isCriticalUnit returns true for units that should always be active on a Globular node.
 func isCriticalUnit(unit string) bool {
-	return unit == "globular-node-agent.service" || unit == "etcd.service"
+	switch canonicalUnitBase(unit) {
+	case "node-agent", "etcd":
+		return true
+	}
+	return false
 }
 
 // serviceBlocks returns the list of subsystems blocked when a service fails.
@@ -470,7 +488,7 @@ func serviceBlocks(name string) []string {
 		return []string{"controller", "node-agent", "all"}
 	case "envoy":
 		return []string{"mesh", "gateway"}
-	case "globular-workflow":
+	case "workflow":
 		return []string{"automation"}
 	}
 	return nil

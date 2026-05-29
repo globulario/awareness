@@ -254,28 +254,34 @@ func extractYAMLValue(line string) string {
 	return strings.TrimSpace(line[idx+1:])
 }
 
+// systemdUnitsToCollect lists the units the collector queries via systemctl show.
+// All Globular-managed infrastructure ships under the canonical
+// `globular-<name>.service` prefix (etcd, minio, envoy, sidekick, ...). Using
+// the bare upstream names here would make every snapshot wrongly report these
+// units as inactive — a regression that has bitten us before. The pin test in
+// collector_test.go guards against re-introducing the bare form.
+var systemdUnitsToCollect = []string{
+	"globular-node-agent.service",
+	"globular-mcp.service",
+	"globular-cluster-controller.service",
+	"globular-workflow.service",
+	"globular-repository.service",
+	"globular-authentication.service",
+	"globular-rbac.service",
+	"globular-dns.service",
+	"scylla-server.service",
+	"globular-minio.service",
+	"globular-sidekick.service",
+	"globular-envoy.service",
+	"globular-etcd.service",
+	"keepalived.service",
+}
+
 // collectSystemdUnits reads unit states via systemctl show.
 // We query a fixed list of Globular-related units rather than all units.
 func (c *Collector) collectSystemdUnits(ctx context.Context) []ServiceObservation {
-	units := []string{
-		"globular-node-agent.service",
-		"globular-mcp.service",
-		"globular-cluster-controller.service",
-		"globular-workflow.service",
-		"globular-repository.service",
-		"globular-authentication.service",
-		"globular-rbac.service",
-		"globular-dns.service",
-		"scylla-server.service",
-		"minio.service",
-		"sidekick.service",
-		"envoy.service",
-		"etcd.service",
-		"keepalived.service",
-	}
-
-	var out []ServiceObservation
-	for _, unit := range units {
+	out := make([]ServiceObservation, 0, len(systemdUnitsToCollect))
+	for _, unit := range systemdUnitsToCollect {
 		out = append(out, c.queryUnit(ctx, unit))
 	}
 	return out

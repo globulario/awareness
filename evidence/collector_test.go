@@ -465,6 +465,35 @@ func TestNewCollector_RespectsExplicitNodeID(t *testing.T) {
 	}
 }
 
+// TestSystemdUnitsToCollect_UsesGlobularPrefix pins the unit list to the
+// canonical `globular-<name>.service` form. Globular installs minio, sidekick,
+// envoy, and etcd under that prefix; the bare upstream names do not exist on
+// a real Globular node. A previous version of this collector hardcoded the
+// bare names, which caused every snapshot to report those four units as
+// inactive and drowned the real findings — see MEMORY.md
+// `feedback_awareness_collector_unit_names`.
+func TestSystemdUnitsToCollect_UsesGlobularPrefix(t *testing.T) {
+	required := []string{
+		"globular-minio.service",
+		"globular-sidekick.service",
+		"globular-envoy.service",
+		"globular-etcd.service",
+	}
+	have := make(map[string]bool, len(systemdUnitsToCollect))
+	for _, u := range systemdUnitsToCollect {
+		have[u] = true
+	}
+	for _, want := range required {
+		if !have[want] {
+			t.Errorf("systemdUnitsToCollect missing %q — Globular installs this unit under the globular- prefix; without it every snapshot reports the unit inactive", want)
+		}
+		bare := strings.TrimPrefix(want, "globular-")
+		if have[bare] {
+			t.Errorf("systemdUnitsToCollect contains bare %q; use %q instead (bare upstream name does not exist on Globular nodes)", bare, want)
+		}
+	}
+}
+
 func TestCollect_PropagatesNodeIDIntoSnapshot(t *testing.T) {
 	// End-to-end: NewCollector("") → Collect() → snapshot.NodeID is non-empty.
 	// Pins the wiring all the way through, so emitted facts can be attributed.
